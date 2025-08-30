@@ -1,0 +1,100 @@
+{
+"nodes": [
+{
+"id": "2a41e2da-19f7-4c31-ab93-3a534db3179e",
+"name": "Gmail Poll Trigger",
+"type": "n8n-nodes-base.gmailTrigger",
+"position": [-360, -260],
+"parameters": {
+"filters": {},
+"pollTimes": {
+"item": [
+{"mode": "everyX", "unit": "minutes", "value": 5}
+]
+}
+},
+"credentials": {"gmailOAuth2": {"id": "10LJ3tXKoUfexiKU", "name": "Gmail account"}},
+"typeVersion": 1.2
+},
+{
+"id": "a25e0e42-8eab-49c5-a553-797da40eb623",
+"name": "OpenAI Chat Processor",
+"type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+"position": [-220, -60],
+"parameters": {"options": {"maxTokens": 4096}},
+"credentials": {"openAiApi": {"id": "qR44iMsUYcLrhdR0", "name": "OpenAi account"}},
+"typeVersion": 1
+},
+{
+"id": "cf437748-a0df-42a2-b1ca-f93162d85bfe",
+"name": "Fetch Gmail Labels",
+"type": "n8n-nodes-base.gmailTool",
+"position": [80, -40],
+"parameters": {"resource": "label", "returnAll": true, "descriptionType": "manual", "toolDescription": "Fetches all Gmail labels"},
+"credentials": {"gmailOAuth2": {"id": "10LJ3tXKoUfexiKU", "name": "Gmail account"}},
+"typeVersion": 2.1
+},
+{
+"id": "152f1970-7a1f-4977-9c21-64b69242d3a9",
+"name": "Get Gmail Message",
+"type": "n8n-nodes-base.gmailTool",
+"position": [260, -40],
+"parameters": {"messageId": "={{ $fromAI('gmail_message_id','gmail message ID','string') }}","operation": "get","descriptionType": "manual","toolDescription": "Retrieve Gmail message by ID"},
+"credentials": {"gmailOAuth2": {"id": "10LJ3tXKoUfexiKU", "name": "Gmail account"}},
+"typeVersion": 2.1
+},
+{
+"id": "ae09cedc-9675-4080-bcdc-3d6c4e4bc490",
+"name": "Assign Label to Gmail Message",
+"type": "n8n-nodes-base.gmailTool",
+"position": [460, -40],
+"parameters": {"labelIds": "={{ $fromAI('gmail_categories','array of label ids') }}","messageId": "={{ $fromAI('gmail_message_id') }}","operation": "addLabels","descriptionType": "manual","toolDescription": "Attach labels to Gmail message"},
+"credentials": {"gmailOAuth2": {"id": "10LJ3tXKoUfexiKU", "name": "Gmail account"}},
+"typeVersion": 2.1
+},
+{
+"id": "be4a92ab-d3ab-451b-8655-172851f68628",
+"name": "Create Gmail Label",
+"type": "n8n-nodes-base.gmailTool",
+"position": [640, -40],
+"parameters": {"name": "={{ $fromAI('new_label_name','new label name','string') }}","resource": "label","operation": "create","descriptionType": "manual","toolDescription": "Create new Gmail label if not found"},
+"credentials": {"gmailOAuth2": {"id": "10LJ3tXKoUfexiKU", "name": "Gmail account"}},
+"typeVersion": 2.1
+},
+{
+"id": "a40466d2-2fe3-4a97-98fe-b14cc38cc141",
+"name": "Email Labeling Agent",
+"type": "@n8n/n8n-nodes-langchain.agent",
+"position": [-60, -260],
+"parameters": {"text": "=Categorize the email with details:\n{{ JSON.stringify($json) }}","options": {"maxIterations": 5,"systemMessage": "Automatically categorize Gmail emails. Tools: Fetch labels, Get message, Create label, Assign label. Compare subject, sender, keywords. Assign best label. Remove inbox label if less important. Create sublabels if necessary. Ensure naming matches existing structure."}},
+"onError": "continueErrorOutput",
+"typeVersion": 1.7
+},
+{
+"id": "6b514df4-761c-4072-abf8-d572ee4b8030",
+"name": "Conversation Memory",
+"type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+"position": [-60, -40],
+"parameters": {"sessionKey": "={{ $json.id }}","sessionIdType": "customKey"},
+"typeVersion": 1.3
+},
+{
+"id": "f06717ed-00d7-4a99-a78c-53217a0067e7",
+"name": "Delay",
+"type": "n8n-nodes-base.wait",
+"position": [-220, -260],
+"parameters": {"amount": 1},
+"typeVersion": 1.1
+}
+],
+"connections": {
+"Delay": {"main": [[{"node": "Email Labeling Agent","type": "main","index": 0}]]},
+"Gmail Poll Trigger": {"main": [[{"node": "Delay","type": "main","index": 0}]]},
+"OpenAI Chat Processor": {"ai_languageModel": [[{"node": "Email Labeling Agent","type": "ai_languageModel","index": 0}]]},
+"Get Gmail Message": {"ai_tool": [[{"node": "Email Labeling Agent","type": "ai_tool","index": 0}]]},
+"Fetch Gmail Labels": {"ai_tool": [[{"node": "Email Labeling Agent","type": "ai_tool","index": 0}]]},
+"Create Gmail Label": {"ai_tool": [[{"node": "Email Labeling Agent","type": "ai_tool","index": 0}]]},
+"Conversation Memory": {"ai_memory": [[{"node": "Email Labeling Agent","type": "ai_memory","index": 0}]]},
+"Assign Label to Gmail Message": {"ai_tool": [[{"node": "Email Labeling Agent","type": "ai_tool","index": 0}]]}
+}
+}
