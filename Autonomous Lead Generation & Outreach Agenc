@@ -1,0 +1,632 @@
+{
+  "name": "Autonomous Lead Generation & Outreach Agency",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 9 * * 1-5" }]
+        }
+      },
+      "id": "trigger-001",
+      "name": "⏰ Daily Trigger (9AM Mon-Fri)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300]
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.apollo.io/v1/mixed_people/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Cache-Control", "value": "no-cache" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "api_key", "value": "={{ $vars.APOLLO_API_KEY }}" },
+            { "name": "q_keywords", "value": "SaaS startup founder CEO" },
+            { "name": "person_titles", "value": "[\"CEO\", \"Founder\", \"Co-Founder\", \"VP Sales\", \"Head of Growth\"]" },
+            { "name": "organization_num_employees_ranges", "value": "[\"1,50\", \"51,200\"]" },
+            { "name": "page", "value": "1" },
+            { "name": "per_page", "value": "25" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "apollo-001",
+      "name": "🔍 Lead Hunter — Apollo Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 300]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const people = $input.first().json.people || [];\nreturn people.map(p => ({\n  json: {\n    lead_id: p.id,\n    first_name: p.first_name,\n    last_name: p.last_name,\n    full_name: `${p.first_name} ${p.last_name}`,\n    email: p.email,\n    title: p.title,\n    linkedin_url: p.linkedin_url,\n    company_name: p.organization?.name,\n    company_domain: p.organization?.website_url,\n    company_industry: p.organization?.industry,\n    company_size: p.organization?.num_employees,\n    company_linkedin: p.organization?.linkedin_url,\n    city: p.city,\n    country: p.country,\n    status: 'new'\n  }\n}));"
+      },
+      "id": "code-001",
+      "name": "🗂️ Parse & Normalize Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.apollo.io/v1/organizations/enrich?api_key={{ $vars.APOLLO_API_KEY }}&domain={{ $json.company_domain }}",
+        "options": {}
+      },
+      "id": "apollo-002",
+      "name": "🏢 Company Research — Apollo Enrich",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [760, 300]
+    },
+
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a B2B research analyst. Given company data, produce a concise research brief (max 200 words) covering: 1) What the company does, 2) Their likely pain points around sales/operations, 3) Recent signals (funding, hiring, product launches) if detectable from the data, 4) Why they would need AI automation or chatbot services. Return ONLY a JSON object with keys: summary, pain_points (array), buying_signals (array), relevance_score (1-10)."
+            },
+            {
+              "role": "user",
+              "content": "=Company: {{ $json.company_name }}\nDomain: {{ $json.company_domain }}\nIndustry: {{ $json.company_industry }}\nSize: {{ $json.company_size }} employees\nDescription: {{ $json.organization?.short_description }}\nKeywords: {{ $json.organization?.keywords?.join(', ') }}\nFunding: {{ $json.organization?.latest_funding_stage }}\nTechnologies: {{ $json.organization?.technology_names?.join(', ') }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "openai-001",
+      "name": "🤖 Company Research Agent — GPT-4o",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.3,
+      "position": [1020, 300]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const lead = $('🗂️ Parse & Normalize Leads').first().json;\nconst rawResearch = $input.first().json.message?.content || '{}';\nlet research = {};\ntry {\n  const cleaned = rawResearch.replace(/```json|```/g, '').trim();\n  research = JSON.parse(cleaned);\n} catch(e) {\n  research = { summary: rawResearch, pain_points: [], buying_signals: [], relevance_score: 5 };\n}\n\nreturn [{\n  json: {\n    ...lead,\n    company_summary: research.summary,\n    pain_points: research.pain_points,\n    buying_signals: research.buying_signals,\n    relevance_score: research.relevance_score\n  }\n}];"
+      },
+      "id": "code-002",
+      "name": "🔗 Merge Lead + Research Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1280, 300]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.relevance_score }}",
+              "rightValue": 6,
+              "operator": { "type": "number", "operation": "gte" }
+            },
+            {
+              "leftValue": "={{ $json.email }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-001",
+      "name": "🎯 Filter — Relevance Score ≥ 6 + Has Email",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1540, 300]
+    },
+
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert B2B cold email copywriter specializing in AI automation services. Write highly personalized cold emails that: 1) Reference something specific about the company, 2) Connect their pain points to your solution, 3) Have a clear, low-friction CTA. Keep subject lines under 8 words. Keep email body under 120 words. Sound human, not salesy. Return ONLY a JSON object with keys: subject_line, email_body, follow_up_1 (day 3), follow_up_2 (day 7)."
+            },
+            {
+              "role": "user",
+              "content": "=Write a cold email for:\nProspect: {{ $json.full_name }}, {{ $json.title }} at {{ $json.company_name }}\nCompany Summary: {{ $json.company_summary }}\nPain Points: {{ $json.pain_points?.join(', ') }}\nBuying Signals: {{ $json.buying_signals?.join(', ') }}\n\nSeller: Elixr Co — AI Chatbot Development & Workflow Automation Agency\nValue Prop: We build custom AI chatbots and automate sales/ops workflows so your team can close more deals with less manual work.\nCTA: Book a free 20-min strategy call"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "openai-002",
+      "name": "✍️ Personalization Agent — GPT-4o",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.3,
+      "position": [1800, 300]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const lead = $('🔗 Merge Lead + Research Data').first().json;\nconst rawEmail = $input.first().json.message?.content || '{}';\nlet emailContent = {};\ntry {\n  const cleaned = rawEmail.replace(/```json|```/g, '').trim();\n  emailContent = JSON.parse(cleaned);\n} catch(e) {\n  emailContent = { subject_line: 'Quick question', email_body: rawEmail, follow_up_1: '', follow_up_2: '' };\n}\n\nreturn [{\n  json: {\n    ...lead,\n    subject_line: emailContent.subject_line,\n    email_body: emailContent.email_body,\n    follow_up_1: emailContent.follow_up_1,\n    follow_up_2: emailContent.follow_up_2,\n    outreach_status: 'ready_to_send',\n    created_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "code-003",
+      "name": "📧 Build Final Email Object",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2060, 300]
+    },
+
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "={{ $json.subject_line }}",
+        "emailType": "text",
+        "message": "={{ $json.email_body }}",
+        "options": {
+          "replyTo": "sumair@elixrco.com",
+          "appendAttribution": false
+        }
+      },
+      "id": "gmail-001",
+      "name": "📤 Outreach Agent — Send Initial Email (Gmail)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2320, 300],
+      "credentials": {
+        "gmailOAuth2": { "id": "gmail-cred-001", "name": "Gmail — Elixr Co" }
+      }
+    },
+
+    {
+      "parameters": {
+        "amount": 3,
+        "unit": "days"
+      },
+      "id": "wait-001",
+      "name": "⏳ Wait 3 Days",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2580, 200]
+    },
+
+    {
+      "parameters": {
+        "amount": 7,
+        "unit": "days"
+      },
+      "id": "wait-002",
+      "name": "⏳ Wait 7 Days",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2580, 400]
+    },
+
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "=Re: {{ $json.subject_line }}",
+        "emailType": "text",
+        "message": "={{ $json.follow_up_1 }}",
+        "options": {
+          "replyTo": "sumair@elixrco.com",
+          "appendAttribution": false
+        }
+      },
+      "id": "gmail-002",
+      "name": "📤 Follow-up Agent — Day 3 Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2840, 200],
+      "credentials": {
+        "gmailOAuth2": { "id": "gmail-cred-001", "name": "Gmail — Elixr Co" }
+      }
+    },
+
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "=Re: {{ $json.subject_line }}",
+        "emailType": "text",
+        "message": "={{ $json.follow_up_2 }}",
+        "options": {
+          "replyTo": "sumair@elixrco.com",
+          "appendAttribution": false
+        }
+      },
+      "id": "gmail-003",
+      "name": "📤 Follow-up Agent — Day 7 Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2840, 400],
+      "credentials": {
+        "gmailOAuth2": { "id": "gmail-cred-001", "name": "Gmail — Elixr Co" }
+      }
+    },
+
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "upsert",
+        "additionalFields": {
+          "firstname": "={{ $json.first_name }}",
+          "lastname": "={{ $json.last_name }}",
+          "email": "={{ $json.email }}",
+          "jobtitle": "={{ $json.title }}",
+          "company": "={{ $json.company_name }}",
+          "website": "={{ $json.company_domain }}",
+          "industry": "={{ $json.company_industry }}",
+          "linkedin_url": "={{ $json.linkedin_url }}",
+          "lead_status": "IN_PROGRESS",
+          "hs_lead_status": "IN_PROGRESS"
+        }
+      },
+      "id": "hubspot-001",
+      "name": "📊 CRM Agent — Upsert Contact (HubSpot)",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [2320, 540],
+      "credentials": {
+        "hubspotAppToken": { "id": "hubspot-cred-001", "name": "HubSpot — Elixr Co" }
+      }
+    },
+
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "create",
+        "additionalFields": {
+          "dealname": "={{ $json.company_name }} — AI Chatbot / Automation",
+          "dealstage": "appointmentscheduled",
+          "pipeline": "default",
+          "amount": "2000",
+          "closedate": "={{ new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0] }}",
+          "description": "={{ $json.company_summary }}"
+        }
+      },
+      "id": "hubspot-002",
+      "name": "📊 CRM Agent — Create Deal (HubSpot)",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [2580, 540],
+      "credentials": {
+        "hubspotAppToken": { "id": "hubspot-cred-001", "name": "HubSpot — Elixr Co" }
+      }
+    },
+
+    {
+      "parameters": {
+        "resource": "note",
+        "operation": "create",
+        "additionalFields": {
+          "hs_note_body": "=OUTREACH LOG\n---\nEmail Sent: {{ $json.created_at }}\nSubject: {{ $json.subject_line }}\n\nEMAIL BODY:\n{{ $json.email_body }}\n\nFOLLOW-UP 1 (Day 3):\n{{ $json.follow_up_1 }}\n\nFOLLOW-UP 2 (Day 7):\n{{ $json.follow_up_2 }}\n\nCOMPANY RESEARCH:\n{{ $json.company_summary }}\n\nPAIN POINTS: {{ $json.pain_points?.join(', ') }}\nBUYING SIGNALS: {{ $json.buying_signals?.join(', ') }}\nRELEVANCE SCORE: {{ $json.relevance_score }}/10"
+        }
+      },
+      "id": "hubspot-003",
+      "name": "📊 CRM Agent — Log Outreach Note",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [2840, 540],
+      "credentials": {
+        "hubspotAppToken": { "id": "hubspot-cred-001", "name": "HubSpot — Elixr Co" }
+      }
+    },
+
+    {
+      "parameters": {
+        "trigger": "gmail",
+        "pollTimes": {
+          "item": [{ "mode": "everyMinute" }]
+        },
+        "filters": {
+          "labelIds": ["INBOX"],
+          "subject": ""
+        },
+        "options": {
+          "dataPropertyAttachmentsPrefixName": ""
+        }
+      },
+      "id": "gmail-watch-001",
+      "name": "📥 Reply Tracker — Gmail Trigger (INBOX Watch)",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [0, 700],
+      "credentials": {
+        "gmailOAuth2": { "id": "gmail-cred-001", "name": "Gmail — Elixr Co" }
+      }
+    },
+
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Classify this email reply from a cold outreach prospect. Return ONLY a JSON object with: intent (one of: interested, not_interested, out_of_office, unsubscribe, question, meeting_request), sentiment (positive/neutral/negative), suggested_action (one of: book_meeting, send_info, remove_from_sequence, reply_to_question, no_action), reply_draft (a short professional reply if action is reply_to_question or send_info, else empty string)."
+            },
+            {
+              "role": "user",
+              "content": "=Email Subject: {{ $json.subject }}\nFrom: {{ $json.from }}\nBody: {{ $json.text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "openai-003",
+      "name": "🤖 Reply Classification Agent — GPT-4o",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.3,
+      "position": [260, 700]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const reply = $input.first().json;\nconst rawClassification = reply.message?.content || '{}';\nlet classification = {};\ntry {\n  const cleaned = rawClassification.replace(/```json|```/g, '').trim();\n  classification = JSON.parse(cleaned);\n} catch(e) {\n  classification = { intent: 'unknown', sentiment: 'neutral', suggested_action: 'no_action', reply_draft: '' };\n}\n\nreturn [{ json: { ...reply, ...classification } }];"
+      },
+      "id": "code-004",
+      "name": "🔍 Parse Reply Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 700]
+    },
+
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.suggested_action }}",
+                    "rightValue": "book_meeting",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Book Meeting"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.suggested_action }}",
+                    "rightValue": "remove_from_sequence",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Remove From Sequence"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.suggested_action }}",
+                    "rightValue": "reply_to_question",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "Reply to Question"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "switch-001",
+      "name": "🔀 Route by Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [780, 700]
+    },
+
+    {
+      "parameters": {
+        "sendTo": "sumair@elixrco.com",
+        "subject": "=🔥 Hot Lead — {{ $json.from }} Wants to Book a Meeting",
+        "emailType": "text",
+        "message": "=A prospect replied and wants to book a meeting!\n\nFrom: {{ $json.from }}\nSubject: {{ $json.subject }}\n\nTheir message:\n{{ $json.text }}\n\nAI Classification:\nIntent: {{ $json.intent }}\nSentiment: {{ $json.sentiment }}\n\nAction: Send them your Calendly link to book a 20-min strategy call.\nhttps://calendly.com/elixrco/strategy-call",
+        "options": {}
+      },
+      "id": "gmail-004",
+      "name": "🔥 Alert — Hot Lead Notification",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1040, 600],
+      "credentials": {
+        "gmailOAuth2": { "id": "gmail-cred-001", "name": "Gmail — Elixr Co" }
+      }
+    },
+
+    {
+      "parameters": {
+        "sendTo": "={{ $json.from }}",
+        "subject": "=Re: {{ $json.subject }}",
+        "emailType": "text",
+        "message": "={{ $json.reply_draft }}",
+        "options": {
+          "replyTo": "sumair@elixrco.com"
+        }
+      },
+      "id": "gmail-005",
+      "name": "💬 Auto-Reply — Answer Question",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1040, 720],
+      "credentials": {
+        "gmailOAuth2": { "id": "gmail-cred-001", "name": "Gmail — Elixr Co" }
+      }
+    },
+
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "update",
+        "updateFields": {
+          "lead_status": "UNQUALIFIED",
+          "hs_email_optout": true
+        }
+      },
+      "id": "hubspot-004",
+      "name": "🚫 CRM — Mark Unsubscribed / Remove",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [1040, 840],
+      "credentials": {
+        "hubspotAppToken": { "id": "hubspot-cred-001", "name": "HubSpot — Elixr Co" }
+      }
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Summary report of leads processed in this run\nconst items = $input.all();\nconst total = items.length;\nconst avgScore = items.reduce((sum, i) => sum + (i.json.relevance_score || 0), 0) / (total || 1);\n\nreturn [{\n  json: {\n    run_date: new Date().toISOString(),\n    leads_processed: total,\n    avg_relevance_score: avgScore.toFixed(1),\n    leads_emailed: total,\n    message: `Elixr Co Lead Gen Run Complete: ${total} leads processed, avg relevance score ${avgScore.toFixed(1)}/10`\n  }\n}];"
+      },
+      "id": "code-005",
+      "name": "📈 Run Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2580, 160]
+    },
+
+    {
+      "parameters": {
+        "sendTo": "sumair@elixrco.com",
+        "subject": "=📈 Elixr Co — Daily Lead Gen Report {{ new Date().toLocaleDateString() }}",
+        "emailType": "text",
+        "message": "={{ $json.message }}\n\nLeads Processed: {{ $json.leads_processed }}\nAvg Relevance Score: {{ $json.avg_relevance_score }}/10\nRun Date: {{ $json.run_date }}\n\nLogin to HubSpot to review all contacts and deals.",
+        "options": {}
+      },
+      "id": "gmail-006",
+      "name": "📧 Daily Report Email to Sumair",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2840, 160],
+      "credentials": {
+        "gmailOAuth2": { "id": "gmail-cred-001", "name": "Gmail — Elixr Co" }
+      }
+    }
+  ],
+
+  "connections": {
+    "⏰ Daily Trigger (9AM Mon-Fri)": {
+      "main": [[{ "node": "🔍 Lead Hunter — Apollo Search", "type": "main", "index": 0 }]]
+    },
+    "🔍 Lead Hunter — Apollo Search": {
+      "main": [[{ "node": "🗂️ Parse & Normalize Leads", "type": "main", "index": 0 }]]
+    },
+    "🗂️ Parse & Normalize Leads": {
+      "main": [[{ "node": "🏢 Company Research — Apollo Enrich", "type": "main", "index": 0 }]]
+    },
+    "🏢 Company Research — Apollo Enrich": {
+      "main": [[{ "node": "🤖 Company Research Agent — GPT-4o", "type": "main", "index": 0 }]]
+    },
+    "🤖 Company Research Agent — GPT-4o": {
+      "main": [[{ "node": "🔗 Merge Lead + Research Data", "type": "main", "index": 0 }]]
+    },
+    "🔗 Merge Lead + Research Data": {
+      "main": [[{ "node": "🎯 Filter — Relevance Score ≥ 6 + Has Email", "type": "main", "index": 0 }]]
+    },
+    "🎯 Filter — Relevance Score ≥ 6 + Has Email": {
+      "main": [[{ "node": "✍️ Personalization Agent — GPT-4o", "type": "main", "index": 0 }]]
+    },
+    "✍️ Personalization Agent — GPT-4o": {
+      "main": [[{ "node": "📧 Build Final Email Object", "type": "main", "index": 0 }]]
+    },
+    "📧 Build Final Email Object": {
+      "main": [[
+        { "node": "📤 Outreach Agent — Send Initial Email (Gmail)", "type": "main", "index": 0 },
+        { "node": "📊 CRM Agent — Upsert Contact (HubSpot)", "type": "main", "index": 0 },
+        { "node": "📈 Run Summary", "type": "main", "index": 0 }
+      ]]
+    },
+    "📤 Outreach Agent — Send Initial Email (Gmail)": {
+      "main": [[
+        { "node": "⏳ Wait 3 Days", "type": "main", "index": 0 },
+        { "node": "⏳ Wait 7 Days", "type": "main", "index": 0 }
+      ]]
+    },
+    "⏳ Wait 3 Days": {
+      "main": [[{ "node": "📤 Follow-up Agent — Day 3 Email", "type": "main", "index": 0 }]]
+    },
+    "⏳ Wait 7 Days": {
+      "main": [[{ "node": "📤 Follow-up Agent — Day 7 Email", "type": "main", "index": 0 }]]
+    },
+    "📊 CRM Agent — Upsert Contact (HubSpot)": {
+      "main": [[{ "node": "📊 CRM Agent — Create Deal (HubSpot)", "type": "main", "index": 0 }]]
+    },
+    "📊 CRM Agent — Create Deal (HubSpot)": {
+      "main": [[{ "node": "📊 CRM Agent — Log Outreach Note", "type": "main", "index": 0 }]]
+    },
+    "📈 Run Summary": {
+      "main": [[{ "node": "📧 Daily Report Email to Sumair", "type": "main", "index": 0 }]]
+    },
+    "📥 Reply Tracker — Gmail Trigger (INBOX Watch)": {
+      "main": [[{ "node": "🤖 Reply Classification Agent — GPT-4o", "type": "main", "index": 0 }]]
+    },
+    "🤖 Reply Classification Agent — GPT-4o": {
+      "main": [[{ "node": "🔍 Parse Reply Classification", "type": "main", "index": 0 }]]
+    },
+    "🔍 Parse Reply Classification": {
+      "main": [[{ "node": "🔀 Route by Intent", "type": "main", "index": 0 }]]
+    },
+    "🔀 Route by Intent": {
+      "main": [
+        [{ "node": "🔥 Alert — Hot Lead Notification", "type": "main", "index": 0 }],
+        [{ "node": "🚫 CRM — Mark Unsubscribed / Remove", "type": "main", "index": 0 }],
+        [{ "node": "💬 Auto-Reply — Answer Question", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+
+  "staticData": null,
+  "tags": ["lead-gen", "outreach", "ai-agency", "elixr-co"],
+  "triggerCount": 2,
+  "updatedAt": "2026-06-17T00:00:00.000Z",
+  "versionId": "1.0.0",
+
+  "_meta": {
+    "author": "Elixr Co",
+    "description": "Autonomous Lead Generation & Outreach Agency — finds leads via Apollo, researches companies with GPT-4o, generates personalized email sequences, sends via Gmail, tracks replies, routes hot leads, and logs everything to HubSpot CRM.",
+    "credentials_required": [
+      "Apollo API Key → set as n8n variable: APOLLO_API_KEY",
+      "Gmail OAuth2 → connect account: sumair@elixrco.com",
+      "HubSpot App Token → connect Elixr Co HubSpot account",
+      "OpenAI API Key → connect in n8n credentials"
+    ],
+    "nodes_count": 24,
+    "agents": [
+      "Lead Hunter Agent (Apollo Search + Normalize)",
+      "Company Research Agent (Apollo Enrich + GPT-4o)",
+      "Personalization Agent (GPT-4o email writer)",
+      "Outreach Agent (Gmail send + follow-up sequence)",
+      "Reply Tracker / Follow-up Agent (Gmail watch + GPT-4o classifier)",
+      "CRM Agent (HubSpot contact, deal, note logging)"
+    ]
+  }
+}
