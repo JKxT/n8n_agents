@@ -1,0 +1,297 @@
+{
+  "name": "Agent 01 — Autonomous B2B Client Acquisition",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "node_trigger",
+      "name": "⏰ Daily Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [0, 300],
+      "notes": "Runs once per day. Change interval as needed."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── CONFIGURATION ───────────────────────────────────────\n// Edit these values before running the workflow\nconst CONFIG = {\n  // Target niche keywords for Google Maps search\n  searchQueries: [\n    \"e-commerce store\",\n    \"online clothing store\",\n    \"Shopify store\",\n    \"online retail store\"\n  ],\n  // Target cities/regions\n  locations: [\n    \"London, UK\",\n    \"Manchester, UK\",\n    \"New York, USA\",\n    \"Los Angeles, USA\"\n  ],\n  // How many leads per run\n  leadsPerRun: 10\n};\n\n// Generate search combinations\nconst combinations = [];\nfor (const query of CONFIG.searchQueries) {\n  for (const location of CONFIG.locations) {\n    combinations.push({\n      query: `${query} ${location}`,\n      niche: query,\n      location: location\n    });\n  }\n}\n\n// Shuffle and limit\nconst shuffled = combinations.sort(() => Math.random() - 0.5);\nconst selected = shuffled.slice(0, CONFIG.leadsPerRun);\n\nreturn selected.map(item => ({ json: item }));"
+      },
+      "id": "node_config",
+      "name": "⚙️ Search Config Generator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 300],
+      "notes": "Edit searchQueries and locations to match your target market."
+    },
+    {
+      "parameters": {
+        "url": "https://maps.googleapis.com/maps/api/place/textsearch/json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $json.query }}"
+            },
+            {
+              "name": "key",
+              "value": "={{ $credentials.googleMapsApiKey }}"
+            },
+            {
+              "name": "type",
+              "value": "store"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_maps_search",
+      "name": "🗺️ Google Maps Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [420, 300],
+      "notes": "Requires Google Maps API key set in credentials. Enable Places API in GCP."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and flatten businesses from Maps response\nconst results = $json.results || [];\n\nif (results.length === 0) {\n  return [];\n}\n\nreturn results.map(place => ({\n  json: {\n    business_name: place.name,\n    address: place.formatted_address,\n    place_id: place.place_id,\n    rating: place.rating || 'N/A',\n    total_ratings: place.user_ratings_total || 0,\n    business_status: place.business_status,\n    types: (place.types || []).join(', '),\n    // Website will be fetched in next step via Place Details\n    website: null,\n    phone: null\n  }\n}));"
+      },
+      "id": "node_extract_places",
+      "name": "📋 Extract Business List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://maps.googleapis.com/maps/api/place/details/json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "place_id",
+              "value": "={{ $json.place_id }}"
+            },
+            {
+              "name": "fields",
+              "value": "name,website,formatted_phone_number,international_phone_number,opening_hours,editorial_summary"
+            },
+            {
+              "name": "key",
+              "value": "={{ $credentials.googleMapsApiKey }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_place_details",
+      "name": "🔍 Fetch Place Details",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [860, 300],
+      "notes": "Fetches website URL and phone number for each business."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge place details back into business object\nconst details = $json.result || {};\nconst prev = $('📋 Extract Business List').item.json;\n\nconst website = details.website || null;\nconst phone = details.formatted_phone_number || details.international_phone_number || null;\n\n// Skip businesses with no website (can't scrape / likely too small)\nif (!website) {\n  return [];\n}\n\nreturn [{\n  json: {\n    ...prev,\n    website: website,\n    phone: phone,\n    description: details.editorial_summary?.overview || ''\n  }\n}];"
+      },
+      "id": "node_merge_details",
+      "name": "🔗 Merge Business Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 300],
+      "notes": "Drops leads with no website. Adjust this filter if needed."
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.website }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": false
+            }
+          }
+        }
+      },
+      "id": "node_scrape_website",
+      "name": "🌐 Scrape Website Content",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1300, 300],
+      "continueOnFail": true,
+      "notes": "Fetches raw HTML. Errors are caught and passed through."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Clean HTML and extract meaningful text\nconst html = $json.data || $json.body || '';\nconst prev = $('🔗 Merge Business Details').item.json;\n\n// Strip HTML tags\nconst text = html\n  .replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '')\n  .replace(/<style[^>]*>[\\s\\S]*?<\\/style>/gi, '')\n  .replace(/<[^>]+>/g, ' ')\n  .replace(/\\s+/g, ' ')\n  .trim()\n  .slice(0, 3000); // Limit to 3000 chars for LLM\n\nreturn [{\n  json: {\n    ...prev,\n    website_text: text || 'Could not extract website content.'\n  }\n}];"
+      },
+      "id": "node_clean_html",
+      "name": "🧹 Clean Website Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "content": "You are a senior B2B sales analyst specialising in AI automation for e-commerce businesses.\n\nAnalyse the following business and website content. Your job is to:\n1. Identify 2-3 specific operational pain points this business likely faces (e.g. manual customer support, no chatbot, repetitive order queries, slow lead response)\n2. Find or infer the most likely decision maker title (e.g. Founder, CEO, Operations Manager, Head of E-Commerce)\n3. Write a SHORT, highly personalised cold email that:\n   - Opens with a specific observation about their business (not generic)\n   - Mentions ONE specific pain point\n   - Offers a concrete AI solution (chatbot, automation, or workflow agent)\n   - Has a clear, low-friction CTA (15-min call)\n   - Is under 120 words\n   - Sounds human, not like a template\n   - Signs off from: Sumair Ul Hassan, CEO — Elixr Co\n\nReturn ONLY a valid JSON object with these exact keys:\n{\n  \"pain_points\": [\"pain 1\", \"pain 2\", \"pain 3\"],\n  \"decision_maker_title\": \"Founder\",\n  \"email_subject\": \"Quick idea for [Business Name]\",\n  \"email_body\": \"Full email text here...\",\n  \"confidence_score\": 85\n}"
+            },
+            {
+              "role": "user",
+              "content": "Business Name: {{ $json.business_name }}\nWebsite: {{ $json.website }}\nAddress: {{ $json.address }}\nDescription: {{ $json.description }}\nWebsite Content:\n{{ $json.website_text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_llm_analysis",
+      "name": "🤖 LLM: Analyse & Write Outreach",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [1740, 300],
+      "notes": "Uses GPT-4o-mini. Swap for Claude or any other model via credentials."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse LLM JSON response\nconst raw = $json.message?.content || $json.choices?.[0]?.message?.content || '';\n\nlet analysis;\ntry {\n  // Strip markdown code fences if present\n  const clean = raw.replace(/```json|```/g, '').trim();\n  analysis = JSON.parse(clean);\n} catch (e) {\n  // Fallback if JSON parse fails\n  analysis = {\n    pain_points: ['Could not parse pain points'],\n    decision_maker_title: 'Founder',\n    email_subject: `Quick idea for ${$('🔗 Merge Business Details').item.json.business_name}`,\n    email_body: 'Could not generate email. Manual review needed.',\n    confidence_score: 0\n  };\n}\n\nconst business = $('🧹 Clean Website Text').item.json;\n\nreturn [{\n  json: {\n    // Business info\n    business_name: business.business_name,\n    website: business.website,\n    address: business.address,\n    phone: business.phone,\n    rating: business.rating,\n    // LLM output\n    pain_points: analysis.pain_points.join(' | '),\n    decision_maker_title: analysis.decision_maker_title,\n    email_subject: analysis.email_subject,\n    email_body: analysis.email_body,\n    confidence_score: analysis.confidence_score,\n    // Meta\n    status: 'Pending Send',\n    created_at: new Date().toISOString(),\n    follow_up_count: 0\n  }\n}];"
+      },
+      "id": "node_parse_llm",
+      "name": "📊 Parse LLM Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1960, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Business Name": "={{ $json.business_name }}",
+            "Website": "={{ $json.website }}",
+            "Address": "={{ $json.address }}",
+            "Phone": "={{ $json.phone }}",
+            "Rating": "={{ $json.rating }}",
+            "Pain Points": "={{ $json.pain_points }}",
+            "Decision Maker": "={{ $json.decision_maker_title }}",
+            "Email Subject": "={{ $json.email_subject }}",
+            "Email Body": "={{ $json.email_body }}",
+            "Confidence Score": "={{ $json.confidence_score }}",
+            "Status": "={{ $json.status }}",
+            "Created At": "={{ $json.created_at }}",
+            "Follow Up Count": "={{ $json.follow_up_count }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_sheets",
+      "name": "📑 Save to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2180, 180],
+      "notes": "Replace YOUR_GOOGLE_SHEET_ID_HERE with your actual Sheet ID from the URL."
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $credentials.smtpUser }}",
+        "toEmail": "={{ $json.decision_maker_title }}@placeholder.com",
+        "subject": "={{ $json.email_subject }}",
+        "emailType": "text",
+        "message": "={{ $json.email_body }}",
+        "options": {
+          "replyTo": "sumair@elixrco.ai"
+        }
+      },
+      "id": "node_smtp_send",
+      "name": "📧 Send via SMTP",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [2180, 420],
+      "notes": "IMPORTANT: Replace toEmail with real scraped/found email. See README for Hunter.io integration."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Update status in memory after send\n// In a real setup, you'd update the Google Sheet row status here\nconst item = $('📊 Parse LLM Output').item.json;\n\nconsole.log(`✅ Lead processed: ${item.business_name}`);\nconsole.log(`📧 Email sent to: ${item.decision_maker_title}`);\nconsole.log(`📊 Confidence: ${item.confidence_score}%`);\n\nreturn [{ json: { ...item, status: 'Sent', sent_at: new Date().toISOString() } }];"
+      },
+      "id": "node_log",
+      "name": "✅ Log & Complete",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 300]
+    }
+  ],
+  "connections": {
+    "⏰ Daily Trigger": {
+      "main": [[{ "node": "⚙️ Search Config Generator", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Search Config Generator": {
+      "main": [[{ "node": "🗺️ Google Maps Search", "type": "main", "index": 0 }]]
+    },
+    "🗺️ Google Maps Search": {
+      "main": [[{ "node": "📋 Extract Business List", "type": "main", "index": 0 }]]
+    },
+    "📋 Extract Business List": {
+      "main": [[{ "node": "🔍 Fetch Place Details", "type": "main", "index": 0 }]]
+    },
+    "🔍 Fetch Place Details": {
+      "main": [[{ "node": "🔗 Merge Business Details", "type": "main", "index": 0 }]]
+    },
+    "🔗 Merge Business Details": {
+      "main": [[{ "node": "🌐 Scrape Website Content", "type": "main", "index": 0 }]]
+    },
+    "🌐 Scrape Website Content": {
+      "main": [[{ "node": "🧹 Clean Website Text", "type": "main", "index": 0 }]]
+    },
+    "🧹 Clean Website Text": {
+      "main": [[{ "node": "🤖 LLM: Analyse & Write Outreach", "type": "main", "index": 0 }]]
+    },
+    "🤖 LLM: Analyse & Write Outreach": {
+      "main": [[{ "node": "📊 Parse LLM Output", "type": "main", "index": 0 }]]
+    },
+    "📊 Parse LLM Output": {
+      "main": [
+        [
+          { "node": "📑 Save to Google Sheets", "type": "main", "index": 0 },
+          { "node": "📧 Send via SMTP", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "📑 Save to Google Sheets": {
+      "main": [[{ "node": "✅ Log & Complete", "type": "main", "index": 0 }]]
+    },
+    "📧 Send via SMTP": {
+      "main": [[{ "node": "✅ Log & Complete", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": ["elixr-co", "b2b", "outreach", "lead-generation", "agent-01"]
+}
