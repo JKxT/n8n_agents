@@ -1,0 +1,571 @@
+{
+  "name": "AI Venture Capital Analyst Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-node",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "path": "new-deal-submission",
+        "options": {}
+      },
+      "id": "webhook-trigger-node",
+      "name": "Submission Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        100,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "serper_api_key",
+              "value": "YOUR_SERPER_API_KEY_HERE"
+            },
+            {
+              "name": "partner_email",
+              "value": "partner-leads@apex-vc.com"
+            },
+            {
+              "name": "startup_name",
+              "value": "Acuity AI"
+            },
+            {
+              "name": "founders",
+              "value": "Sarah Chen (ex-Stripe Staff Engineer), Dr. Amit Patel (Stanford AI PhD)"
+            },
+            {
+              "name": "description",
+              "value": "Building autonomous agents for B2B procurement and supply chain optimization."
+            },
+            {
+              "name": "traction",
+              "value": "$18,500 MRR, 12% Month-over-Month growth, 3 active pilot designs, 94% customer retention score."
+            },
+            {
+              "name": "funding_ask",
+              "value": "$1.5M Seed Round at $10M Post-money valuation"
+            },
+            {
+              "name": "website",
+              "value": "https://acuity-ai.co"
+            }
+          ],
+          "number": [
+            {
+              "name": "weight_team",
+              "value": 0.35
+            },
+            {
+              "name": "weight_traction",
+              "value": 0.3
+            },
+            {
+              "name": "weight_market",
+              "value": 0.2
+            },
+            {
+              "name": "weight_competition",
+              "value": 0.15
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-config-node",
+      "name": "Set Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        300,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Deals",
+        "options": {}
+      },
+      "id": "get-pipeline-node",
+      "name": "Get Deal Pipeline",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        500,
+        320
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are an expert VC Analyst specializing in early-stage tech investments. Evaluate the founding team pedigree and the submitted traction metrics. Provide a quantitative score for Team (1-10) and Traction (1-10) and write a summary justification."
+            },
+            {
+              "role": "user",
+              "message": "Evaluate this startup submission:\nName: {{ $node[\"Set Configuration\"].json.startup_name }}\nFounders: {{ $node[\"Set Configuration\"].json.founders }}\nTraction Details: {{ $node[\"Set Configuration\"].json.traction }}\nFunding Ask: {{ $node[\"Set Configuration\"].json.funding_ask }}\n\nProvide output in JSON format: \n{\"team_score\": 1 to 10, \"team_analysis\": \"...\", \"traction_score\": 1 to 10, \"traction_analysis\": \"...\"}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "eval-team-traction-node",
+      "name": "Evaluate Team & Traction",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        700,
+        200
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://google.serper.dev/search",
+        "headers": {
+          "parameter": [
+            {
+              "name": "X-API-KEY",
+              "value": "={{ $node[\"Set Configuration\"].json.serper_api_key }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "bodyParameters": {
+          "parameter": [
+            {
+              "name": "q",
+              "value": "=competitors for {{ $node[\"Set Configuration\"].json.description }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "serper-search-node",
+      "name": "Market & Competitor Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        700,
+        440
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are an expert VC Analyst. Review the startup description, the target industry, and Google search outputs to evaluate the market opportunity (TAM, SAM, SOM) and direct competitive landscape. Provide a quantitative score for Market (1-10) and Competition (1-10), and write a summary justification."
+            },
+            {
+              "role": "user",
+              "message": "Startup Description: {{ $node[\"Set Configuration\"].json.description }}\nGoogle Search Competitor Data: {{ $node[\"Market & Competitor Search\"].json.organic ? $node[\"Market & Competitor Search\"].json.organic.map(o => o.title + ': ' + o.snippet).join('\\n') : 'No search results available.' }}\n\nProvide output in JSON format: \n{\"market_score\": 1 to 10, \"market_analysis\": \"...\", \"competition_score\": 1 to 10, \"competition_analysis\": \"...\"}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "eval-market-comp-node",
+      "name": "Evaluate Market & Competition",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        900,
+        440
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition"
+      },
+      "id": "merge-analysis-node",
+      "name": "Merge Analysis",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        1100,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const config = $node[\"Set Configuration\"].json;\nlet teamData = { team_score: 5, team_analysis: '', traction_score: 5, traction_analysis: '' };\nlet marketData = { market_score: 5, market_analysis: '', competition_score: 5, competition_analysis: '' };\n\ntry {\n  const teamRaw = $node[\"Evaluate Team & Traction\"].json.choices[0].message.content;\n  teamData = JSON.parse(teamRaw);\n} catch (e) {}\n\ntry {\n  const marketRaw = $node[\"Evaluate Market & Competition\"].json.choices[0].message.content;\n  marketData = JSON.parse(marketRaw);\n} catch (e) {}\n\nconst wTeam = Number(config.weight_team || 0.35);\nconst wTraction = Number(config.weight_traction || 0.30);\nconst wMarket = Number(config.weight_market || 0.20);\nconst wComp = Number(config.weight_competition || 0.15);\n\nconst finalScore = (\n  (Number(teamData.team_score) * wTeam) +\n  (Number(teamData.traction_score) * wTraction) +\n  (Number(marketData.market_score) * wMarket) +\n  (Number(marketData.competition_score) * wComp)\n);\n\nlet verdict = 'PASS';\nif (finalScore >= 8.0) {\n  verdict = 'DEEP_DIVE';\n} else if (finalScore >= 5.5) {\n  verdict = 'SCREENING_CALL';\n}\n\nreturn {\n  team_score: teamData.team_score,\n  team_analysis: teamData.team_analysis,\n  traction_score: teamData.traction_score,\n  traction_analysis: teamData.traction_analysis,\n  market_score: marketData.market_score,\n  market_analysis: marketData.market_analysis,\n  competition_score: marketData.competition_score,\n  competition_analysis: marketData.competition_analysis,\n  final_score: finalScore.toFixed(1),\n  verdict: verdict\n};"
+      },
+      "id": "calculate-score-node",
+      "name": "Calculate Deal Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are a professional Venture Capital Investment Associate. Write a complete, comprehensive Investment Memo in Markdown based on the startup team, traction, market opportunity, and competitive risks. Structure: 1. Investment Verdict & Recommendation, 2. Executive Summary, 3. Team Evaluation, 4. Traction & Financial Audit, 5. Market Opportunity & TAM, 6. Competitor Landscape, 7. Risks & Mitigations."
+            },
+            {
+              "role": "user",
+              "message": "Startup: {{ $node[\"Set Configuration\"].json.startup_name }}\nDescription: {{ $node[\"Set Configuration\"].json.description }}\nTraction details: {{ $node[\"Set Configuration\"].json.traction }}\nTeam Score: {{ $json.team_score }} (Analysis: {{ $json.team_analysis }})\nTraction Score: {{ $json.traction_score }} (Analysis: {{ $json.traction_analysis }})\nMarket Score: {{ $json.market_score }} (Analysis: {{ $json.market_analysis }})\nCompetition Score: {{ $json.competition_score }} (Analysis: {{ $json.competition_analysis }})\nFinal Score: {{ $json.final_score }}/10\nVerdict: {{ $json.verdict }}"
+            }
+          ]
+        }
+      },
+      "id": "draft-memo-node",
+      "name": "Draft Investment Memo (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        320
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  memo_markdown: $node[\"Draft Investment Memo (LLM)\"].json.choices[0].message.content\n};"
+      },
+      "id": "parse-memo-node",
+      "name": "Parse Memo Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1700,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Deals",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Startup": "={{ $node[\"Set Configuration\"].json.startup_name }}",
+            "Description": "={{ $node[\"Set Configuration\"].json.description }}",
+            "Founders": "={{ $node[\"Set Configuration\"].json.founders }}",
+            "Traction": "={{ $node[\"Set Configuration\"].json.traction }}",
+            "Ask": "={{ $node[\"Set Configuration\"].json.funding_ask }}",
+            "Score": "={{ $node[\"Calculate Deal Score\"].json.final_score }}",
+            "Verdict": "={{ $node[\"Calculate Deal Score\"].json.verdict }}",
+            "Memo Summary": "={{ $node[\"Calculate Deal Score\"].json.team_analysis }}. Market: {{ $node[\"Calculate Deal Score\"].json.market_analysis }}",
+            "Status": "EVALUATED"
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-log-deal-node",
+      "name": "Google Sheets Log Deal",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        1900,
+        320
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $node[\"Calculate Deal Score\"].json.verdict }}",
+              "operation": "equal",
+              "value2": "DEEP_DIVE"
+            }
+          ]
+        }
+      },
+      "id": "is-deep-dive-node",
+      "name": "Is Deep Dive?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2100,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $node[\"Set Configuration\"].json.partner_email }}",
+        "subject": "=🔥 DEAL ALERT: High Score Startup Sourced ({{ $node[\"Set Configuration\"].json.startup_name }} - Score {{ $node[\"Calculate Deal Score\"].json.final_score }}/10)",
+        "message": "=Hi Partners,\n\nOur Autonomous VC Analyst has flagged a high-potential startup deal for deep-dive review.\n\nStartup Name: {{ $node[\"Set Configuration\"].json.startup_name }}\nFounders: {{ $node[\"Set Configuration\"].json.founders }}\nFunding Ask: {{ $node[\"Set Configuration\"].json.funding_ask }}\nScore: {{ $node[\"Calculate Deal Score\"].json.final_score }}/10\nVerdict: {{ $node[\"Calculate Deal Score\"].json.verdict }}\n\nBelow is the drafted VC Investment Memo:\n\n{{ $json.memo_markdown }}\n\nBest,\nAutonomous VC Analyst Agent",
+        "options": {}
+      },
+      "id": "gmail-alert-node",
+      "name": "Send Partner Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        2300,
+        200
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-credential-id",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "noop-completed-node",
+      "name": "Finished Output",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2300,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submission Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Configuration": {
+      "main": [
+        [
+          {
+            "node": "Get Deal Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Deal Pipeline": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Team & Traction",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Market & Competitor Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Team & Traction": {
+      "main": [
+        [
+          {
+            "node": "Merge Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Market & Competitor Search": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Market & Competition",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Market & Competition": {
+      "main": [
+        [
+          {
+            "node": "Merge Analysis",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Analysis": {
+      "main": [
+        [
+          {
+            "node": "Calculate Deal Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Deal Score": {
+      "main": [
+        [
+          {
+            "node": "Draft Investment Memo (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Investment Memo (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse Memo Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Memo Output": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets Log Deal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets Log Deal": {
+      "main": [
+        [
+          {
+            "node": "Is Deep Dive?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Deep Dive?": {
+      "main": [
+        [
+          {
+            "node": "Send Partner Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finished Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Partner Alert": {
+      "main": [
+        [
+          {
+            "node": "Finished Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionTimeout": 3600
+  },
+  "versionId": "b1e9cfa9-710e-48a5-82a1-dfb5ea23f99e",
+  "id": "vc-analyst-workflow",
+  "meta": {
+    "instanceId": "local"
+  },
+  "tags": []
+}
