@@ -1,0 +1,569 @@
+{
+  "name": "Global Supply Chain Optimization Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-node",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "operations_email",
+              "value": "ops-alerts@factory-global.com"
+            }
+          ],
+          "number": [
+            {
+              "name": "safety_stock_multiplier",
+              "value": 1.2
+            },
+            {
+              "name": "default_lead_time_days",
+              "value": 14
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-config-node",
+      "name": "Set Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        300,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Inventory",
+        "options": {}
+      },
+      "id": "get-inventory-node",
+      "name": "Get Inventory Ledger",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        500,
+        140
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Shipments",
+        "options": {}
+      },
+      "id": "get-shipments-node",
+      "name": "Get Shipments Ledger",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Suppliers",
+        "options": {}
+      },
+      "id": "get-suppliers-node",
+      "name": "Get Supplier Catalog",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        500,
+        460
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const inventory = $node[\"Get Inventory Ledger\"].json || [];\nconst shipments = $node[\"Get Shipments Ledger\"].json || [];\nconst suppliers = $node[\"Get Supplier Catalog\"].json || [];\n\nconst itemsList = Array.isArray(inventory) ? inventory : [inventory];\nconst shipList = Array.isArray(shipments) ? shipments : [shipments];\nconst suppList = Array.isArray(suppliers) ? suppliers : [suppliers];\n\nconst results = [];\n\nfor (const inv of itemsList) {\n  const itemName = inv[\"Item Name\"] || inv.ItemName;\n  if (!itemName) continue;\n  \n  const currentStock = Number(inv[\"Current Stock\"] || 0);\n  const dailyUse = Number(inv[\"Daily Consumption\"] || 0);\n  const safetyStock = Number(inv[\"Safety Stock\"] || 0);\n  const leadTime = Number(inv[\"Supplier Lead Time\"] || 14);\n  const currentSupplier = inv[\"Current Supplier\"] || 'Unknown';\n  \n  const doc = dailyUse > 0 ? (currentStock / dailyUse).toFixed(1) : 999;\n  \n  const reorderPoint = (dailyUse * leadTime) + safetyStock;\n  const needsReorder = currentStock <= reorderPoint;\n  \n  const itemShipments = shipList.filter(s => (s[\"Item Name\"] || s.ItemName) === itemName);\n  let activeShipmentDelay = false;\n  let shipmentDetails = \"None\";\n  \n  if (itemShipments.length > 0) {\n    const delayShipments = itemShipments.filter(s => s.Status === 'DELAYED');\n    if (delayShipments.length > 0) {\n      activeShipmentDelay = true;\n      shipmentDetails = delayShipments.map(s => `ID: ${s[\"Shipment ID\"] || 'N/A'}, Qty: ${s.Quantity || 0}, Location: ${s.Location || 'Unknown'}, ETA: ${s.ETA || 'N/A'}`).join('; ');\n    } else {\n      shipmentDetails = itemShipments.map(s => `ID: ${s[\"Shipment ID\"] || 'N/A'}, Qty: ${s.Quantity || 0}, Status: ${s.Status || 'N/A'}`).join('; ');\n    }\n  }\n  \n  const alternatives = suppList\n    .filter(s => (s[\"Item Name\"] || s.ItemName) === itemName && s[\"Supplier Name\"] !== currentSupplier)\n    .map(s => ({\n      supplier: s[\"Supplier Name\"],\n      cost: Number(s[\"Unit Cost\"] || 0),\n      lead_time: Number(s[\"Lead Time\"] || 14),\n      min_order: Number(s[\"Min Order Qty\"] || 0),\n      reliability: s[\"Reliability Rating\"] || '90%'\n    }));\n    \n  const status = (Number(doc) <= leadTime || activeShipmentDelay) ? 'RISK_DETECTED' : 'HEALTHY';\n  \n  results.push({\n    item_name: itemName,\n    current_stock: currentStock,\n    daily_consumption: dailyUse,\n    safety_stock: safetyStock,\n    lead_time_days: leadTime,\n    current_supplier: currentSupplier,\n    days_of_cover: doc,\n    reorder_point: reorderPoint,\n    needs_reorder: needsReorder,\n    shipment_status: shipmentDetails,\n    shipment_delayed: activeShipmentDelay,\n    supplier_alternatives: alternatives,\n    audit_status: status\n  });\n}\n\nreturn results;"
+      },
+      "id": "shortage-predictor-node",
+      "name": "Shortage Predictor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.audit_status }}",
+              "operation": "equal",
+              "value2": "RISK_DETECTED"
+            }
+          ]
+        }
+      },
+      "id": "filter-risk-node",
+      "name": "Filter Risk Items",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-risk-node",
+      "name": "Loop Risk Items",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api-mock.shipments.com/v1/disruptions",
+        "options": {}
+      },
+      "id": "disruption-lookup-node",
+      "name": "Transit Disruption Lookups",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        1300,
+        300
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are an expert Global Supply Chain Optimizer and Logistics Director. When an inventory item is flagged with shortage risk or shipping delays, analyze current status, active shipments, and alternative suppliers list. Choose the best alternative supplier to execute an emergency reorder, calculate optimal reorder quantity, and estimate the cost difference."
+            },
+            {
+              "role": "user",
+              "message": "Audit at-risk item:\nItem Name: {{ $node[\"Loop Risk Items\"].json.item_name }}\nCurrent Stock: {{ $node[\"Loop Risk Items\"].json.current_stock }}\nDaily Consumption Rate: {{ $node[\"Loop Risk Items\"].json.daily_consumption }}\nDays of Cover: {{ $node[\"Loop Risk Items\"].json.days_of_cover }} days\nCurrent Supplier: {{ $node[\"Loop Risk Items\"].json.current_supplier }} (Lead Time: {{ $node[\"Loop Risk Items\"].json.lead_time_days }} days)\nActive Shipment Status: {{ $node[\"Loop Risk Items\"].json.shipment_status }}\nAlternative Suppliers: {{ JSON.stringify($node[\"Loop Risk Items\"].json.supplier_alternatives) }}\nGlobal Route Disruption Logs: Port backlogs and shipping channel delays reported.\n\nProvide output in JSON format: \n{\"recommended_supplier\": \"...\", \"recommended_reorder_qty\": 0, \"reorder_lead_time_days\": 0, \"unit_cost\": 0.0, \"net_cost_change_total\": 0.0, \"optimization_reasoning\": \"...\", \"mitigation_strategy\": \"...\"}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "supplier-optimizer-node",
+      "name": "Supplier Optimizer (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let opt = { recommended_supplier: '', recommended_reorder_qty: 0, reorder_lead_time_days: 14, unit_cost: 0, net_cost_change_total: 0, optimization_reasoning: '', mitigation_strategy: '' };\ntry {\n  const rawText = $node[\"Supplier Optimizer (LLM)\"].json.choices[0].message.content;\n  opt = JSON.parse(rawText);\n} catch (e) {\n  opt.optimization_reasoning = \"Failed to parse LLM optimization plan.\";\n  opt.recommended_supplier = \"Fallback Supplier\";\n}\nreturn {\n  ...$json,\n  recommended_supplier: opt.recommended_supplier,\n  recommended_reorder_qty: opt.recommended_reorder_qty,\n  reorder_lead_time_days: opt.reorder_lead_time_days,\n  unit_cost: opt.unit_cost,\n  net_cost_change_total: opt.net_cost_change_total,\n  optimization_reasoning: opt.optimization_reasoning,\n  mitigation_strategy: opt.mitigation_strategy\n};"
+      },
+      "id": "parse-opt-node",
+      "name": "Parse Optimization Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are an automated logistics analyst. Write a detailed Supply Chain Mitigation & Reorder Report in Markdown. Structure: 1. Executive Summary, 2. Threat Analysis (stockout prediction date, delays), 3. Selected Supplier Alternative (cost/speed trade-off), 4. Reorder Execution plan, 5. Projected Cost Impact."
+            },
+            {
+              "role": "user",
+              "message": "Item: {{ $node[\"Loop Risk Items\"].json.item_name }}\nDays of cover: {{ $node[\"Loop Risk Items\"].json.days_of_cover }} days\nDelay details: {{ $node[\"Loop Risk Items\"].json.shipment_status }}\nOptimization Action: Reordering from {{ $json.recommended_supplier }} (Qty: {{ $json.recommended_reorder_qty }} units, Lead time: {{ $json.reorder_lead_time_days }} days)\nReasoning: {{ $json.optimization_reasoning }}\nProjected Cost Impact: {{ $json.net_cost_change_total }} USD"
+            }
+          ]
+        }
+      },
+      "id": "draft-report-node",
+      "name": "Draft Mitigation Report",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1900,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  report_markdown: $node[\"Draft Mitigation Report\"].json.choices[0].message.content\n};"
+      },
+      "id": "parse-report-node",
+      "name": "Parse Report Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        2100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Mitigation Log",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Item Name": "={{ $node[\"Loop Risk Items\"].json.item_name }}",
+            "Current Supplier": "={{ $node[\"Loop Risk Items\"].json.current_supplier }}",
+            "Delayed Shipment": "={{ $node[\"Loop Risk Items\"].json.shipment_status }}",
+            "Suggested Supplier": "={{ $node[\"Parse Optimization Plan\"].json.recommended_supplier }}",
+            "Recommended Qty": "={{ $node[\"Parse Optimization Plan\"].json.recommended_reorder_qty }}",
+            "Cost Impact": "={{ $node[\"Parse Optimization Plan\"].json.net_cost_change_total }}",
+            "Action Strategy": "={{ $node[\"Parse Optimization Plan\"].json.mitigation_strategy }}",
+            "Status": "ALERT_SENT"
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-log-mitigation-node",
+      "name": "Google Sheets Log Mitigation",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        2300,
+        240
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $node[\"Set Configuration\"].json.operations_email }}",
+        "subject": "=⚠️ SUPPLY CHAIN ALERT: Stockout Mitigation Plan for {{ $node[\"Loop Risk Items\"].json.item_name }}",
+        "message": "=Hi Operations Team,\n\nOur Global Supply Chain Optimization Agent has identified a critical stockout risk for {{ $node[\"Loop Risk Items\"].json.item_name }}.\n\nDays of Cover: {{ $node[\"Loop Risk Items\"].json.days_of_cover }} days\nDelayed Shipment Status: {{ $node[\"Loop Risk Items\"].json.shipment_status }}\n\nBelow is the suggested Emergency Supplier Switch and Reorder plan:\n\n{{ $json.report_markdown }}\n\nBest,\nAutonomous Logistics Optimization Agent",
+        "options": {}
+      },
+      "id": "gmail-alert-node",
+      "name": "Send Operations Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        2500,
+        240
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-credential-id",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "loop-back-noop-node",
+      "name": "Loop Back NoOp",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2700,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "noop-completed-node",
+      "name": "Finished Output",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        480
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Configuration": {
+      "main": [
+        [
+          {
+            "node": "Get Inventory Ledger",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Shipments Ledger",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Supplier Catalog",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Inventory Ledger": {
+      "main": [
+        [
+          {
+            "node": "Shortage Predictor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Shipments Ledger": {
+      "main": [
+        [
+          {
+            "node": "Shortage Predictor",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get Supplier Catalog": {
+      "main": [
+        [
+          {
+            "node": "Shortage Predictor",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Shortage Predictor": {
+      "main": [
+        [
+          {
+            "node": "Filter Risk Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Risk Items": {
+      "main": [
+        [
+          {
+            "node": "Loop Risk Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Risk Items": {
+      "main": [
+        [
+          {
+            "node": "Transit Disruption Lookups",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finished Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transit Disruption Lookups": {
+      "main": [
+        [
+          {
+            "node": "Supplier Optimizer (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supplier Optimizer (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse Optimization Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Optimization Plan": {
+      "main": [
+        [
+          {
+            "node": "Draft Mitigation Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Mitigation Report": {
+      "main": [
+        [
+          {
+            "node": "Parse Report Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Report Output": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets Log Mitigation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets Log Mitigation": {
+      "main": [
+        [
+          {
+            "node": "Send Operations Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Operations Alert": {
+      "main": [
+        [
+          {
+            "node": "Loop Back NoOp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Back NoOp": {
+      "main": [
+        [
+          {
+            "node": "Loop Risk Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionTimeout": 3600
+  },
+  "versionId": "f9a8bca9-bf60-496a-a280-5fb621bdfc08",
+  "id": "supply-chain-workflow",
+  "meta": {
+    "instanceId": "local"
+  },
+  "tags": []
+}
