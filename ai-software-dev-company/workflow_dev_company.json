@@ -1,0 +1,521 @@
+{
+  "name": "AI Software Development Company",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-node",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "software_idea",
+              "value": "A dark-themed Pomodoro timer website with sound notifications and a retro layout"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-state-node",
+      "name": "Set Initial State",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        300,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are the CEO of an autonomous software development agency. Your task is to analyze the user's software idea, outline the software architecture, choose the tech stack, and write a high-level roadmap. Output a clean JSON object containing: {\"roadmap\": \"...\", \"tech_stack\": \"...\", \"features\": \"...\"}."
+            },
+            {
+              "role": "user",
+              "message": "Develop a technical roadmap for: {{ $json.software_idea }}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "ceo-agent-node",
+      "name": "CEO Agent (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        500,
+        240
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let roadmapData = { roadmap: '', tech_stack: '', features: '' };\ntry {\n  const rawText = $node[\"CEO Agent (LLM)\"].json.choices[0].message.content;\n  roadmapData = JSON.parse(rawText);\n} catch (e) {\n  roadmapData.roadmap = \"Develop simple HTML application.\";\n  roadmapData.tech_stack = \"HTML5, CSS3, Vanilla JS\";\n  roadmapData.features = $node[\"Set Initial State\"].json.software_idea;\n}\nreturn {\n  ...$json,\n  ceo_roadmap: roadmapData.roadmap,\n  ceo_tech_stack: roadmapData.tech_stack,\n  ceo_features: roadmapData.features\n};"
+      },
+      "id": "parse-ceo-node",
+      "name": "Parse CEO Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        700,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are the Lead Product Manager. Take the CEO's roadmap and design a detailed Product Requirements Document (PRD) containing User Stories, UI/UX Layout, Functional Requirements, and Scope of Work. Keep it focused and descriptive. Output a clean JSON object: {\"prd_markdown\": \"...\"}"
+            },
+            {
+              "role": "user",
+              "message": "Generate the PRD based on: Tech Stack: {{ $json.ceo_tech_stack }}, Features: {{ $json.ceo_features }}, Roadmap: {{ $json.ceo_roadmap }}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "pm-agent-node",
+      "name": "PM Agent (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        900,
+        240
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let prdData = { prd_markdown: '' };\ntry {\n  const rawText = $node[\"PM Agent (LLM)\"].json.choices[0].message.content;\n  prdData = JSON.parse(rawText);\n} catch (e) {\n  prdData.prd_markdown = `# PRD\\n\\n## Requirements\\n- Build app with tech: ${$json.ceo_tech_stack}\\n- Features: ${$json.ceo_features}`;\n}\nreturn {\n  ...$json,\n  prd_markdown: prdData.prd_markdown\n};"
+      },
+      "id": "parse-pm-node",
+      "name": "Parse PM Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are the Lead Developer. Take the PRD and write the complete, clean, production-ready source code. If it is a frontend app, bundle everything (HTML, CSS, JS) into a single, beautifully styled HTML file. Avoid placeholders. Write the code inside a JSON response: {\"code\": \"...\", \"filename\": \"index.html\"}"
+            },
+            {
+              "role": "user",
+              "message": "Write the code for this PRD:\n{{ $json.prd_markdown }}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "developer-agent-node",
+      "name": "Developer Agent (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        240
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let devData = { code: '', filename: 'index.html' };\ntry {\n  const rawText = $node[\"Developer Agent (LLM)\"].json.choices[0].message.content;\n  devData = JSON.parse(rawText);\n} catch (e) {\n  devData.code = \"<!DOCTYPE html><html><body><h1>Error generating code</h1></body></html>\";\n}\nreturn {\n  ...$json,\n  dev_code: devData.code,\n  dev_filename: devData.filename\n};"
+      },
+      "id": "parse-dev-node",
+      "name": "Parse Developer Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are the QA Engineer. Analyze the Developer's code and compare it to the Product Manager's PRD. Perform static code analysis, look for bugs, styling errors, edge cases, or missing requirements. You must output a JSON object: {\"qa_report\": \"...\", \"status\": \"PASS\" | \"FAIL\", \"corrected_code\": \"...\"}. If the status is FAIL, specify the exact issues in qa_report and write the corrected version of the code in corrected_code. If the status is PASS, copy the developer's code exactly into corrected_code."
+            },
+            {
+              "role": "user",
+              "message": "PRD:\n{{ $node[\"Parse PM Output\"].json.prd_markdown }}\n\nDeveloper Code:\n{{ $json.dev_code }}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "qa-agent-node",
+      "name": "QA Agent (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1700,
+        240
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let qaData = { qa_report: '', status: 'PASS', corrected_code: '' };\ntry {\n  const rawText = $node[\"QA Agent (LLM)\"].json.choices[0].message.content;\n  qaData = JSON.parse(rawText);\n} catch (e) {\n  qaData.qa_report = \"Failed to parse QA report.\";\n  qaData.status = \"PASS\";\n  qaData.corrected_code = $json.dev_code;\n}\nreturn {\n  ...$json,\n  qa_report: qaData.qa_report,\n  qa_status: qaData.status,\n  qa_corrected_code: qaData.corrected_code\n};"
+      },
+      "id": "parse-qa-node",
+      "name": "Parse QA Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1900,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.qa_status }}",
+              "operation": "equal",
+              "value2": "PASS"
+            }
+          ]
+        }
+      },
+      "id": "qa-passed-if-node",
+      "name": "QA Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are the Lead Developer. The QA agent found bugs in your code. Review the QA Report and rewrite the corrected, bug-free version of the code. Output the revised code inside a JSON: {\"code\": \"...\"}"
+            },
+            {
+              "role": "user",
+              "message": "Original Code:\n{{ $node[\"Parse Developer Output\"].json.dev_code }}\n\nQA Report:\n{{ $json.qa_report }}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "dev-fix-node",
+      "name": "Developer Fix (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        2300,
+        140
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let fixData = { code: '' };\ntry {\n  const rawText = $node[\"Developer Fix (LLM)\"].json.choices[0].message.content;\n  fixData = JSON.parse(rawText);\n} catch (e) {\n  fixData.code = $node[\"Parse QA Output\"].json.qa_corrected_code;\n}\nreturn {\n  ...$json,\n  final_code: fixData.code,\n  final_source: 'Developer Fixed'\n};"
+      },
+      "id": "parse-fix-node",
+      "name": "Parse Dev Fix",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        2500,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch",
+        "output1": "={{ $node[\"QA Passed?\"].json.qa_corrected_code }}",
+        "output2": "={{ $node[\"Parse Dev Fix\"].json.final_code }}"
+      },
+      "id": "merge-node",
+      "name": "Merge Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        2700,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "let finalCode = '';\nlet source = '';\n\ntry {\n  // If we came from the QA Passed route\n  if ($node[\"QA Passed?\"].json.qa_corrected_code) {\n    finalCode = $node[\"QA Passed?\"].json.qa_corrected_code;\n    source = 'Direct Pass';\n  } else {\n    // If we came from the Dev Fix route\n    finalCode = $node[\"Parse Dev Fix\"].json.final_code;\n    source = 'Developer Fix';\n  }\n} catch (e) {\n  // Fallback\n  finalCode = $node[\"Parse QA Output\"].json.qa_corrected_code || $node[\"Parse Developer Output\"].json.dev_code;\n  source = 'Fallback';\n}\n\nconst filename = $node[\"Parse Developer Output\"].json.dev_filename || 'index.html';\nconst binaryData = Buffer.from(finalCode, 'utf-8').toString('base64');\n\nreturn {\n  json: {\n    filename: filename,\n    code_length: finalCode.length,\n    source: source\n  },\n  binary: {\n    data: {\n      data: binaryData,\n      mimeType: 'text/html',\n      fileName: filename\n    }\n  }\n};"
+      },
+      "id": "prepare-binary-node",
+      "name": "Prepare Binary File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        2900,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "fileContent": "={{ $binary.data }}",
+        "fileName": "=/out/{{ $json.filename }}",
+        "options": {}
+      },
+      "id": "write-file-node",
+      "name": "Save File to Disk",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [
+        3100,
+        240
+      ],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Initial State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Initial State": {
+      "main": [
+        [
+          {
+            "node": "CEO Agent (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CEO Agent (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse CEO Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse CEO Output": {
+      "main": [
+        [
+          {
+            "node": "PM Agent (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PM Agent (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse PM Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse PM Output": {
+      "main": [
+        [
+          {
+            "node": "Developer Agent (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Developer Agent (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse Developer Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Developer Output": {
+      "main": [
+        [
+          {
+            "node": "QA Agent (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QA Agent (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse QA Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse QA Output": {
+      "main": [
+        [
+          {
+            "node": "QA Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QA Passed?": {
+      "main": [
+        [
+          {
+            "node": "Merge Paths",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Developer Fix (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Developer Fix (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse Dev Fix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Dev Fix": {
+      "main": [
+        [
+          {
+            "node": "Merge Paths",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Paths": {
+      "main": [
+        [
+          {
+            "node": "Prepare Binary File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Binary File": {
+      "main": [
+        [
+          {
+            "node": "Save File to Disk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionTimeout": 3600
+  },
+  "versionId": "1b9a9572-ef1e-450f-a185-5b48b5e9f82d",
+  "id": "software-dev-company-workflow",
+  "meta": {
+    "instanceId": "local"
+  },
+  "tags": []
+}
