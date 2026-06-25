@@ -1,0 +1,696 @@
+{
+  "name": "B2B Client Acquisition - Main Workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-node",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger-node",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        100,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "niche",
+              "value": "Dental Clinics"
+            },
+            {
+              "name": "city",
+              "value": "Miami, FL"
+            },
+            {
+              "name": "sender_name",
+              "value": "Alex Mercer"
+            },
+            {
+              "name": "sender_company",
+              "value": "Apex Dental Marketing"
+            },
+            {
+              "name": "hunter_api_key",
+              "value": "YOUR_HUNTER_API_KEY_HERE"
+            }
+          ],
+          "number": [
+            {
+              "name": "limit",
+              "value": 5
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-params-node",
+      "name": "Set Lead Params",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        300,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "q": "={{ $json.niche }} in {{ $json.city }}",
+        "limit": "={{ $json.limit }}"
+      },
+      "id": "google-maps-node",
+      "name": "Google Maps Search",
+      "type": "n8n-nodes-base.googleMaps",
+      "typeVersion": 1,
+      "position": [
+        500,
+        320
+      ],
+      "credentials": {
+        "googleMapsApi": {
+          "id": "google-maps-credential-id",
+          "name": "Google Maps API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.website }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "filter-empty-website-node",
+      "name": "Filter Empty Website",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [
+        700,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "let website = $json.website || '';\nlet domain = '';\ntry {\n  if (!website.startsWith('http://') && !website.startsWith('https://')) {\n    website = 'https://' + website;\n  }\n  const parsedUrl = new URL(website);\n  domain = parsedUrl.hostname.replace('www.', '');\n} catch (e) {\n  domain = website;\n}\nreturn {\n  ...$json,\n  website_clean: website,\n  domain: domain,\n  company_name_clean: $json.name || 'Valued Business'\n};"
+      },
+      "id": "extract-domain-node",
+      "name": "Extract Domain & Company",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        900,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "lookup",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Leads",
+        "lookupColumn": "Website",
+        "lookupValue": "={{ $json.website_clean }}",
+        "options": {}
+      },
+      "id": "check-crm-node",
+      "name": "Check If Already in CRM",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        1100,
+        320
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.rowNumber }}",
+              "operation": "isEmpty"
+            }
+          ]
+        }
+      },
+      "id": "filter-existing-node",
+      "name": "Filter Existing CRM",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-leads-node",
+      "name": "Loop Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.website_clean }}",
+        "options": {
+          "ignoreSSLIssues": true,
+          "timeout": 10000
+        }
+      },
+      "id": "scrape-homepage-node",
+      "name": "Scrape Homepage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        1700,
+        320
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const html = $json.data || '';\nlet cleanText = html\n  .replace(/<script[^>]*>([\\s\\S]*?)<\\/script>/gi, '')\n  .replace(/<style[^>]*>([\\s\\S]*?)<\\/style>/gi, '')\n  .replace(/<[^>]+>/g, ' ')\n  .replace(/\\s+/g, ' ')\n  .trim();\ncleanText = cleanText.substring(0, 3000);\nreturn {\n  ...$node[\"Loop Leads\"].json,\n  scraped_text: cleanText || 'No website text available'\n};"
+      },
+      "id": "clean-html-node",
+      "name": "Clean HTML & Extract Info",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1900,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are an expert B2B business consultant and sales researcher. Analyze website content to identify critical pain points."
+            },
+            {
+              "role": "user",
+              "message": "Analyze this website content for {{ $json.company_name_clean }}. Identify 2-3 specific business or website pain points (e.g., lack of online booking, slow load speed, poor call-to-actions, outdated design, missing testimonials, no mobile optimization). Write a 2-sentence summary of the business and list the pain points. Return it as a JSON format: {\"summary\": \"...\", \"pain_points\": \"...\"}. Website content: {{ $json.scraped_text }}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "analyze-website-node",
+      "name": "Analyze Website (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        2100,
+        320
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let analysis = { summary: '', pain_points: '' };\ntry {\n  const rawText = $node[\"Analyze Website (LLM)\"].json.choices[0].message.content;\n  const jsonMatch = rawText.match(/\\{[\\s\\S]*\\}/);\n  if (jsonMatch) {\n    analysis = JSON.parse(jsonMatch[0]);\n  } else {\n    analysis = JSON.parse(rawText);\n  }\n} catch (e) {\n  analysis.summary = \"B2B client site analyzed.\";\n  analysis.pain_points = \"Potential areas of improvement in website layout and B2B client conversion.\";\n}\nreturn {\n  ...$json,\n  analysis_summary: analysis.summary,\n  analysis_pain_points: analysis.pain_points\n};"
+      },
+      "id": "parse-llm-node",
+      "name": "Parse LLM Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        2300,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.hunter.io/v2/domain-search?domain={{ $json.domain }}&api_key={{ $node[\"Set Lead Params\"].json.hunter_api_key }}",
+        "options": {}
+      },
+      "id": "hunter-find-contacts-node",
+      "name": "Find Contacts (Hunter.io)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        2500,
+        320
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "let email = '';\nlet firstName = 'Business Owner';\nlet lastName = '';\nlet title = 'Owner';\n\ntry {\n  const hunterData = $node[\"Find Contacts (Hunter.io)\"].json;\n  if (hunterData && hunterData.data && hunterData.data.emails && hunterData.data.emails.length > 0) {\n    const match = hunterData.data.emails[0];\n    email = match.value;\n    firstName = match.first_name || 'Business Owner';\n    lastName = match.last_name || '';\n    title = match.position || 'Decision Maker';\n  }\n} catch (e) {\n  // hunter failed\n}\n\nif (!email) {\n  email = $node[\"Loop Leads\"].json.email || `info@${$node[\"Loop Leads\"].json.domain}`;\n}\n\nreturn {\n  ...$json,\n  target_email: email,\n  contact_first_name: firstName,\n  contact_last_name: lastName,\n  contact_title: title\n};"
+      },
+      "id": "process-contact-node",
+      "name": "Process Contact Info",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        2700,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are a cold outreach copywriter who writes highly personalized, short, friendly emails that get responses. Avoid sales jargon, corporate speak, or cheesy hooks."
+            },
+            {
+              "role": "user",
+              "message": "Write a personalized cold email to {{ $json.contact_first_name }} ({{ $json.contact_title }} at {{ $json.company_name_clean }}).\nOur Agency: {{ $node[\"Set Lead Params\"].json.sender_company }}\nSender Name: {{ $node[\"Set Lead Params\"].json.sender_name }}\nBusiness summary: {{ $json.analysis_summary }}\nSpecific pain point: {{ $json.analysis_pain_points }}\n\nGuidelines:\n1. Keep it under 150 words.\n2. Open by mentioning a specific positive detail about their business or website.\n3. Pivot naturally to one website pain point (e.g., \"I noticed your website is missing a quick booking form, which might cause mobile visitors to drop off\").\n4. Offer value (e.g., \"I made a quick 2-minute mockup of how this could look\").\n5. Call to action should be low-friction (e.g., \"Open to seeing it? No strings attached\").\n6. Provide a short subject line.\nReturn a JSON format: {\"subject\": \"...\", \"body\": \"...\"}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "draft-outreach-node",
+      "name": "Draft Outreach (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        2900,
+        320
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let emailDraft = { subject: 'Quick question', body: '' };\ntry {\n  const rawText = $node[\"Draft Outreach (LLM)\"].json.choices[0].message.content;\n  const jsonMatch = rawText.match(/\\{[\\s\\S]*\\}/);\n  if (jsonMatch) {\n    emailDraft = JSON.parse(jsonMatch[0]);\n  } else {\n    emailDraft = JSON.parse(rawText);\n  }\n} catch (e) {\n  emailDraft.body = `Hi ${$json.contact_first_name},\\n\\nI was looking at ${$json.company_name_clean} and noticed some areas where we could help improve your client acquisition website. Let me know if you are open to a brief chat.\\n\\nBest,\\n${$node[\"Set Lead Params\"].json.sender_name}`;\n}\nreturn {\n  ...$json,\n  email_subject: emailDraft.subject,\n  email_body: emailDraft.body\n};"
+      },
+      "id": "parse-outreach-node",
+      "name": "Parse Outreach Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        3100,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Leads",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.company_name_clean }}",
+            "Website": "={{ $json.website_clean }}",
+            "Domain": "={{ $json.domain }}",
+            "Email": "={{ $json.target_email }}",
+            "First Name": "={{ $json.contact_first_name }}",
+            "Title": "={{ $json.contact_title }}",
+            "Summary": "={{ $json.analysis_summary }}",
+            "Pain Points": "={{ $json.analysis_pain_points }}",
+            "Status": "PENDING_OUTREACH",
+            "Follow Up Count": 0,
+            "Date Added": "={{ new Date().toISOString().split('T')[0] }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-add-row-node",
+      "name": "Google Sheets Add Lead",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        3300,
+        240
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.target_email }}",
+        "subject": "={{ $json.email_subject }}",
+        "message": "={{ $json.email_body }}",
+        "options": {}
+      },
+      "id": "gmail-send-node",
+      "name": "Send Outreach Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        3500,
+        240
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-credential-id",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Leads",
+        "columnToMatchOn": "Website",
+        "valueToMatchOn": "={{ $json.website_clean }}",
+        "fieldsToSend": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "OUTREACH_SENT",
+            "Date Contacted": "={{ new Date().toISOString().split('T')[0] }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-update-status-node",
+      "name": "Google Sheets Update Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        3700,
+        240
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "completed-node",
+      "name": "Finished Output",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3900,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Lead Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Lead Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Lead Params": {
+      "main": [
+        [
+          {
+            "node": "Google Maps Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Maps Search": {
+      "main": [
+        [
+          {
+            "node": "Filter Empty Website",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Empty Website": {
+      "main": [
+        [
+          {
+            "node": "Extract Domain & Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Domain & Company": {
+      "main": [
+        [
+          {
+            "node": "Check If Already in CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Already in CRM": {
+      "main": [
+        [
+          {
+            "node": "Filter Existing CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Existing CRM": {
+      "main": [
+        [
+          {
+            "node": "Loop Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Leads": {
+      "main": [
+        [
+          {
+            "node": "Scrape Homepage",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finished Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scrape Homepage": {
+      "main": [
+        [
+          {
+            "node": "Clean HTML & Extract Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean HTML & Extract Info": {
+      "main": [
+        [
+          {
+            "node": "Analyze Website (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Website (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse LLM Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse LLM Analysis": {
+      "main": [
+        [
+          {
+            "node": "Find Contacts (Hunter.io)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Contacts (Hunter.io)": {
+      "main": [
+        [
+          {
+            "node": "Process Contact Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Contact Info": {
+      "main": [
+        [
+          {
+            "node": "Draft Outreach (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Outreach (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse Outreach Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Outreach Email": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets Add Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets Add Lead": {
+      "main": [
+        [
+          {
+            "node": "Send Outreach Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Outreach Email": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets Update Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets Update Status": {
+      "main": [
+        [
+          {
+            "node": "Loop Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionTimeout": 3600
+  },
+  "versionId": "b5e9ca7a-2fb6-455b-b9f8-5801f9e2cd1e",
+  "id": "b2b-main-workflow",
+  "meta": {
+    "instanceId": "local"
+  },
+  "tags": []
+}

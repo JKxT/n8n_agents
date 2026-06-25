@@ -1,0 +1,595 @@
+{
+  "name": "B2B Client Acquisition - Follow-up Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger-node",
+      "name": "Daily Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "sender_name",
+              "value": "Alex Mercer"
+            },
+            {
+              "name": "sender_company",
+              "value": "Apex Dental Marketing"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-settings-node",
+      "name": "Set Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        300,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Leads",
+        "options": {}
+      },
+      "id": "get-leads-node",
+      "name": "Get CRM Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        500,
+        240
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const today = new Date();\nconst filtered = [];\n\nfor (const item of $input.all()) {\n  const row = item.json;\n  const status = row.Status || '';\n  \n  if (status === 'OUTREACH_SENT' || status === 'FOLLOWUP_1_SENT') {\n    const lastContactStr = row['Date Contacted'] || row['Date Added'];\n    if (lastContactStr) {\n      const lastContact = new Date(lastContactStr);\n      const diffTime = Math.abs(today - lastContact);\n      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));\n      // Follow up after 3 or more days of silence\n      if (diffDays >= 3) {\n        filtered.push(item);\n      }\n    }\n  }\n}\nreturn filtered;"
+      },
+      "id": "filter-wait-days-node",
+      "name": "Filter Leads Needing Follow-up",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        700,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-leads-node",
+      "name": "Loop Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        900,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "q": "=from:{{ $json.Email }}",
+        "options": {}
+      },
+      "id": "gmail-check-replies-node",
+      "name": "Check Gmail Replies",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        240
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-credential-id",
+          "name": "Gmail OAuth2"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "let replied = false;\nconst leadEmail = $node[\"Loop Leads\"].json.Email;\nconst gmailData = $input.all();\n\nif (gmailData && gmailData.length > 0) {\n  for (const item of gmailData) {\n    const msg = item.json;\n    if (msg.from && msg.from.value) {\n      const sender = msg.from.value.toLowerCase();\n      if (sender.includes(leadEmail.toLowerCase())) {\n        replied = true;\n        break;\n      }\n    }\n  }\n}\n\nreturn {\n  replied: replied\n};"
+      },
+      "id": "check-if-replied-node",
+      "name": "Check If Replied",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.replied }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "branch-replied-node",
+      "name": "Branch: Replied?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Leads",
+        "columnToMatchOn": "Website",
+        "valueToMatchOn": "={{ $node[\"Loop Leads\"].json.Website }}",
+        "fieldsToSend": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "REPLIED",
+            "Date Replied": "={{ new Date().toISOString().split('T')[0] }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-update-replied-node",
+      "name": "Mark CRM Replied",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        1700,
+        140
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "YOUR_NOTIFICATION_EMAIL_HERE",
+        "subject": "=🔥 B2B Lead Replied: {{ $node[\"Loop Leads\"].json.Name }}!",
+        "message": "=Hi there,\n\nGood news! The lead {{ $node[\"Loop Leads\"].json.Name }} ({{ $node[\"Loop Leads\"].json.Email }}) has replied to your outreach campaign.\n\nWebsite: {{ $node[\"Loop Leads\"].json.Website }}\nPain Points Sourced: {{ $node[\"Loop Leads\"].json[\"Pain Points\"] }}\n\nTheir automated campaign has been stopped. Please log into Gmail and follow up manually.\n\nBest,\nYour B2B Acquisition Agent",
+        "options": {}
+      },
+      "id": "gmail-notify-user-node",
+      "name": "Notify Replied",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        1900,
+        140
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-credential-id",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ Number($node[\"Loop Leads\"].json['Follow Up Count'] || 0) }}",
+              "operation": "smaller",
+              "value2": 2
+            }
+          ]
+        }
+      },
+      "id": "check-followup-count-node",
+      "name": "Under Follow-up Limit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1700,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are a cold outreach copywriter who writes highly personalized, short, friendly emails that get responses. Avoid sales jargon, corporate speak, or cheesy hooks."
+            },
+            {
+              "role": "user",
+              "message": "Draft a short follow-up email. \nRecipient Name: {{ $node[\"Loop Leads\"].json['First Name'] }}\nBusiness Name: {{ $node[\"Loop Leads\"].json.Name }}\nOriginal Pain Point Discussed: {{ $node[\"Loop Leads\"].json['Pain Points'] }}\nOur Agency: {{ $node[\"Set Settings\"].json.sender_company }}\nSender Name: {{ $node[\"Set Settings\"].json.sender_name }}\nFollow Up Sequence: This is follow-up #{{ Number($node[\"Loop Leads\"].json['Follow Up Count'] || 0) + 1 }}.\n\nGuidelines:\n- Keep it under 80 words.\n- If this is follow-up #1: Gently ask if they saw your last email about their website's pain point. Keep it casual (e.g. \"Wanted to bump this in case it got buried. Do you have 5 minutes for a quick look at the mockup I made?\")\n- If this is follow-up #2: Be polite and brief. Note that you don't want to spam them and this is your last try. Ask if they can point you to the right person, or if they'd prefer you not reach out again.\nReturn a JSON format: {\"subject\": \"...\", \"body\": \"...\"}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "draft-followup-llm-node",
+      "name": "Draft Follow-up (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1900,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let emailDraft = { subject: 'Quick question', body: '' };\ntry {\n  const rawText = $node[\"Draft Follow-up (LLM)\"].json.choices[0].message.content;\n  const jsonMatch = rawText.match(/\\{[\\s\\S]*\\}/);\n  if (jsonMatch) {\n    emailDraft = JSON.parse(jsonMatch[0]);\n  } else {\n    emailDraft = JSON.parse(rawText);\n  }\n} catch (e) {\n  emailDraft.body = `Hi ${$node[\"Loop Leads\"].json['First Name']},\\n\\nJust wanted to follow up quickly on my previous email. Let me know if you might have 5 minutes to discuss this next week.\\n\\nBest,\\n${$node[\"Set Settings\"].json.sender_name}`;\n}\nreturn {\n  ...$json,\n  email_subject: emailDraft.subject,\n  email_body: emailDraft.body\n};"
+      },
+      "id": "parse-followup-node",
+      "name": "Parse Follow-up Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        2100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $node[\"Loop Leads\"].json.Email }}",
+        "subject": "={{ $json.email_subject }}",
+        "message": "={{ $json.email_body }}",
+        "options": {}
+      },
+      "id": "gmail-send-followup-node",
+      "name": "Send Follow-up Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        2300,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-credential-id",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Leads",
+        "columnToMatchOn": "Website",
+        "valueToMatchOn": "={{ $node[\"Loop Leads\"].json.Website }}",
+        "fieldsToSend": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "=FOLLOWUP_{{ Number($node[\"Loop Leads\"].json['Follow Up Count'] || 0) + 1 }}_SENT",
+            "Follow Up Count": "={{ Number($node[\"Loop Leads\"].json['Follow Up Count'] || 0) + 1 }}",
+            "Date Contacted": "={{ new Date().toISOString().split('T')[0] }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-update-followup-node",
+      "name": "Update CRM Follow-up",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        2500,
+        300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Leads",
+        "columnToMatchOn": "Website",
+        "valueToMatchOn": "={{ $node[\"Loop Leads\"].json.Website }}",
+        "fieldsToSend": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "NO_REPLY_CLOSED"
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-close-lead-node",
+      "name": "Close Lead (No Reply)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        1900,
+        440
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "complete-node",
+      "name": "NoOp Completed",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2800,
+        240
+      ]
+    }
+  ],
+  "connections": {
+    "Daily Schedule": {
+      "main": [
+        [
+          {
+            "node": "Set Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Settings": {
+      "main": [
+        [
+          {
+            "node": "Get CRM Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get CRM Leads": {
+      "main": [
+        [
+          {
+            "node": "Filter Leads Needing Follow-up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Leads Needing Follow-up": {
+      "main": [
+        [
+          {
+            "node": "Loop Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Leads": {
+      "main": [
+        [
+          {
+            "node": "Check Gmail Replies",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "NoOp Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Gmail Replies": {
+      "main": [
+        [
+          {
+            "node": "Check If Replied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Replied": {
+      "main": [
+        [
+          {
+            "node": "Branch: Replied?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Branch: Replied?": {
+      "main": [
+        [
+          {
+            "node": "Mark CRM Replied",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Under Follow-up Limit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark CRM Replied": {
+      "main": [
+        [
+          {
+            "node": "Notify Replied",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Replied": {
+      "main": [
+        [
+          {
+            "node": "Loop Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Under Follow-up Limit?": {
+      "main": [
+        [
+          {
+            "node": "Draft Follow-up (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Close Lead (No Reply)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Close Lead (No Reply)": {
+      "main": [
+        [
+          {
+            "node": "Loop Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Follow-up (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse Follow-up Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Follow-up Email": {
+      "main": [
+        [
+          {
+            "node": "Send Follow-up Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Follow-up Email": {
+      "main": [
+        [
+          {
+            "node": "Update CRM Follow-up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update CRM Follow-up": {
+      "main": [
+        [
+          {
+            "node": "Loop Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionTimeout": 3600
+  },
+  "versionId": "e3e8be91-7ffb-402a-a9f8-d42194fbe9cf",
+  "id": "b2b-followup-workflow",
+  "meta": {
+    "instanceId": "local"
+  },
+  "tags": []
+}
