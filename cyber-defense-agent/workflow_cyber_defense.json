@@ -1,0 +1,719 @@
+{
+  "name": "Autonomous Cyber Defense Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "siem-alert",
+        "options": {}
+      },
+      "id": "webhook-trigger-node",
+      "name": "SIEM Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "source_ip",
+              "value": "198.51.100.42"
+            },
+            {
+              "name": "dest_ip",
+              "value": "10.0.1.15"
+            },
+            {
+              "name": "user_account",
+              "value": "jdoe@company.com"
+            },
+            {
+              "name": "alert_name",
+              "value": "Multiple Failed SSH Logins"
+            },
+            {
+              "name": "log_message",
+              "value": "Failed password for jdoe from 198.51.100.42 port 52140 ssh2. Repeated 25 times."
+            },
+            {
+              "name": "timestamp",
+              "value": "2026-06-25T13:30:00Z"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "manual-trigger-node",
+      "name": "Manual Trigger Mock",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "abuseipdb_api_key",
+              "value": "YOUR_ABUSEIPDB_API_KEY_HERE"
+            },
+            {
+              "name": "admin_email",
+              "value": "secops-alert@company.com"
+            },
+            {
+              "name": "cloudflare_zone_id",
+              "value": "YOUR_ZONE_ID"
+            },
+            {
+              "name": "cloudflare_api_key",
+              "value": "YOUR_CLOUDFLARE_API_KEY"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-settings-node",
+      "name": "Set Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        300,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ip = $json.source_ip || '';\nconst whitelist = ['127.0.0.1', '::1', '10.0.1.5', '192.168.1.100'];\n\nlet isWhitelisted = false;\nif (whitelist.includes(ip) || ip.startsWith('10.0.') || ip.startsWith('192.168.')) {\n  isWhitelisted = true;\n}\n\nreturn {\n  ...$json,\n  is_whitelisted: isWhitelisted\n};"
+      },
+      "id": "whitelist-check-node",
+      "name": "IP Whitelist Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        500,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_whitelisted }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-whitelisted-node",
+      "name": "If Whitelisted",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        700,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.abuseipdb.com/api/v2/check?ipAddress={{ $json.source_ip }}&maxAgeInDays=90",
+        "headers": {
+          "parameter": [
+            {
+              "name": "Key",
+              "value": "={{ $node[\"Set Settings\"].json.abuseipdb_api_key }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "abuseipdb-lookup-node",
+      "name": "AbuseIPDB Threat Intel Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        900,
+        320
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const ipdbData = $node[\"AbuseIPDB Threat Intel Lookup\"].json;\nlet abuseScore = 0;\nlet ipCountry = 'Unknown';\nlet usageType = 'Unknown';\n\ntry {\n  if (ipdbData && ipdbData.data) {\n    abuseScore = ipdbData.data.abuseConfidenceScore || 0;\n    ipCountry = ipdbData.data.countryCode || 'Unknown';\n    usageType = ipdbData.data.usageType || 'Unknown';\n  }\n} catch (e) {\n  // fallback on empty response\n}\n\nreturn {\n  ...$node[\"If Whitelisted\"].json,\n  intel_abuse_score: abuseScore,\n  intel_country: ipCountry,\n  intel_usage_type: usageType\n};"
+      },
+      "id": "process-intel-node",
+      "name": "Process Threat Intel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are an automated Tier-2 SOC Analyst. Review security alerts and correlate them with threat intelligence metadata to perform threat triage. Determine severity (Critical, High, Medium, Low), verify if it is a false positive, and specify containment recommendation (block_ip, suspend_user, isolate_host, none)."
+            },
+            {
+              "role": "user",
+              "message": "Triage this security event:\nAlert Name: {{ $json.alert_name }}\nLog Message: {{ $json.log_message }}\nTarget User Account: {{ $json.user_account }}\nSource IP: {{ $json.source_ip }}\nThreat Intel Abuse Confidence Score: {{ $json.intel_abuse_score }}%\nSource Country: {{ $json.intel_country }}\n\nProvide output in JSON format: \n{\"threat_analysis\": \"...\", \"severity\": \"CRITICAL\" | \"HIGH\" | \"MEDIUM\" | \"LOW\", \"is_false_positive\": true | false, \"recommended_action\": \"block_ip\" | \"suspend_user\" | \"isolate_host\" | \"none\", \"reasoning\": \"...\"}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "soc-analyst-node",
+      "name": "SOC Analyst (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        320
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let triage = { threat_analysis: '', severity: 'LOW', is_false_positive: false, recommended_action: 'none', reasoning: '' };\ntry {\n  const rawText = $node[\"SOC Analyst (LLM)\"].json.choices[0].message.content;\n  triage = JSON.parse(rawText);\n} catch (e) {\n  triage.threat_analysis = \"Failed to parse SOC Analyst triage report.\";\n  triage.severity = \"HIGH\";\n  triage.recommended_action = \"block_ip\";\n}\nreturn {\n  ...$json,\n  triage_analysis: triage.threat_analysis,\n  triage_severity: triage.severity,\n  triage_is_false_positive: triage.is_false_positive,\n  triage_action: triage.recommended_action,\n  triage_reasoning: triage.reasoning\n};"
+      },
+      "id": "parse-triage-node",
+      "name": "Parse SOC Triage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.triage_severity }}",
+              "operation": "in",
+              "value2": "CRITICAL,HIGH"
+            }
+          ],
+          "boolean": [
+            {
+              "value1": "={{ $json.triage_is_false_positive }}",
+              "value2": false
+            }
+          ]
+        }
+      },
+      "id": "triage-severity-if-node",
+      "name": "Is Critical/High Threat?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1700,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.triage_action }}",
+              "operation": "equal",
+              "value2": "block_ip"
+            }
+          ]
+        }
+      },
+      "id": "containment-action-if-node",
+      "name": "Containment: Block IP?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1900,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.cloudflare.com/client/v4/zones/{{ $node[\"Set Settings\"].json.cloudflare_zone_id }}/firewall/access_rules/rules",
+        "headers": {
+          "parameter": [
+            {
+              "name": "X-Auth-Email",
+              "value": "={{ $node[\"Set Settings\"].json.admin_email }}"
+            },
+            {
+              "name": "X-Auth-Key",
+              "value": "={{ $node[\"Set Settings\"].json.cloudflare_api_key }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "bodyParameters": {
+          "parameter": [
+            {
+              "name": "mode",
+              "value": "block"
+            },
+            {
+              "name": "configuration.target",
+              "value": "ip"
+            },
+            {
+              "name": "configuration.value",
+              "value": "={{ $node[\"Parse SOC Triage\"].json.source_ip }}"
+            },
+            {
+              "name": "notes",
+              "value": "Autonomous SOAR block of malicious source IP."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "cloudflare-block-ip-node",
+      "name": "Cloudflare WAF Block IP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        2100,
+        140
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://identity-mock.okta.com/api/v1/users/{{ encodeURIComponent($node[\"Parse SOC Triage\"].json.user_account) }}/lifecycle/suspend",
+        "options": {}
+      },
+      "id": "okta-suspend-user-node",
+      "name": "Okta Suspend User",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        2100,
+        340
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch",
+        "output1": "={{ $node[\"Cloudflare WAF Block IP\"].json }}",
+        "output2": "={{ $node[\"Okta Suspend User\"].json }}"
+      },
+      "id": "merge-node",
+      "name": "Merge Actions",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        2300,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are an automated incident response manager. Write a detailed Cyber Security Incident Report (CSIR) in Markdown. Structure: 1. Executive Summary, 2. Threat Triage Analysis, 3. Indicators of Compromise (IoCs), 4. Active Containment Actions Executed, 5. Post-Incident Recommendations."
+            },
+            {
+              "role": "user",
+              "message": "Triage Info: {{ $node[\"Parse SOC Triage\"].json.triage_analysis }}\nContainment Actions Taken: Suspended account {{ $node[\"Parse SOC Triage\"].json.user_account }} and/or blocked IP {{ $node[\"Parse SOC Triage\"].json.source_ip }} in WAF.\nSeverity: {{ $node[\"Parse SOC Triage\"].json.triage_severity }}"
+            }
+          ]
+        }
+      },
+      "id": "draft-report-node",
+      "name": "Generate Incident Report (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        2500,
+        240
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  report_markdown: $node[\"Generate Incident Report (LLM)\"].json.choices[0].message.content\n};"
+      },
+      "id": "parse-report-node",
+      "name": "Parse Incident Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        2700,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $node[\"Set Settings\"].json.admin_email }}",
+        "subject": "=🚨 AUTONOMOUS CONTAINMENT: Severity {{ $node[\"Parse SOC Triage\"].json.triage_severity }} Threat Contained (IP: {{ $node[\"Parse SOC Triage\"].json.source_ip }})",
+        "message": "=Attention SecOps Team,\n\nOur Autonomous Cyber Defense Agent has contained a security incident.\n\nSummary of Actions:\n- Target IP {{ $node[\"Parse SOC Triage\"].json.source_ip }} blocked: {{ $node[\"Parse SOC Triage\"].json.triage_action === 'block_ip' ? 'YES' : 'NO' }}\n- User Account {{ $node[\"Parse SOC Triage\"].json.user_account }} suspended: {{ $node[\"Parse SOC Triage\"].json.triage_action === 'suspend_user' ? 'YES' : 'NO' }}\n\nBelow is the generated Cyber Security Incident Report:\n\n{{ $json.report_markdown }}\n\nBest,\nAutonomous Cyber Defense Agent",
+        "options": {}
+      },
+      "id": "gmail-alert-node",
+      "name": "Send Alert Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        2900,
+        240
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-credential-id",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Incidents",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ new Date().toISOString() }}",
+            "Incident ID": "=INC-{{ Math.floor(Math.random()*900000 + 100000) }}",
+            "Alert Name": "={{ $node[\"Parse SOC Triage\"].json.alert_name }}",
+            "Source IP": "={{ $node[\"Parse SOC Triage\"].json.source_ip }}",
+            "User Account": "={{ $node[\"Parse SOC Triage\"].json.user_account }}",
+            "Severity": "={{ $node[\"Parse SOC Triage\"].json.triage_severity }}",
+            "Containment Action": "={{ $node[\"Parse SOC Triage\"].json.triage_action }}",
+            "Status": "CONTAINED",
+            "Incident Report": "={{ $node[\"Parse SOC Triage\"].json.triage_analysis }}. Report Summary: {{ $node[\"Parse SOC Triage\"].json.triage_reasoning }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-log-high-risk-node",
+      "name": "Log Contained Incident",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        3100,
+        140
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Incidents",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ new Date().toISOString() }}",
+            "Incident ID": "=INC-{{ Math.floor(Math.random()*900000 + 100000) }}",
+            "Alert Name": "={{ $json.alert_name }}",
+            "Source IP": "={{ $json.source_ip }}",
+            "User Account": "={{ $json.user_account }}",
+            "Severity": "={{ $json.triage_severity || 'LOW' }}",
+            "Containment Action": "none",
+            "Status": "LOGGED_NO_ACTION",
+            "Incident Report": "={{ $json.triage_analysis || 'Whitelisted or Low Risk activity.' }}. Reasoning: {{ $json.triage_reasoning || 'No action required.' }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-log-low-risk-node",
+      "name": "Log Low Risk/False Alarm",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        2500,
+        440
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "noop-whitelisted-node",
+      "name": "Log Safe Event",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        900,
+        480
+      ]
+    }
+  ],
+  "connections": {
+    "SIEM Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger Mock": {
+      "main": [
+        [
+          {
+            "node": "Set Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Settings": {
+      "main": [
+        [
+          {
+            "node": "IP Whitelist Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IP Whitelist Check": {
+      "main": [
+        [
+          {
+            "node": "If Whitelisted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Whitelisted": {
+      "main": [
+        [
+          {
+            "node": "AbuseIPDB Threat Intel Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Safe Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AbuseIPDB Threat Intel Lookup": {
+      "main": [
+        [
+          {
+            "node": "Process Threat Intel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Threat Intel": {
+      "main": [
+        [
+          {
+            "node": "SOC Analyst (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SOC Analyst (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse SOC Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse SOC Triage": {
+      "main": [
+        [
+          {
+            "node": "Is Critical/High Threat?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Critical/High Threat?": {
+      "main": [
+        [
+          {
+            "node": "Containment: Block IP?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Low Risk/False Alarm",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Containment: Block IP?": {
+      "main": [
+        [
+          {
+            "node": "Cloudflare WAF Block IP",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Okta Suspend User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cloudflare WAF Block IP": {
+      "main": [
+        [
+          {
+            "node": "Merge Actions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Okta Suspend User": {
+      "main": [
+        [
+          {
+            "node": "Merge Actions",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Actions": {
+      "main": [
+        [
+          {
+            "node": "Generate Incident Report (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Incident Report (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse Incident Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Incident Report": {
+      "main": [
+        [
+          {
+            "node": "Send Alert Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Alert Email": {
+      "main": [
+        [
+          {
+            "node": "Log Contained Incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionTimeout": 3600
+  },
+  "versionId": "f7cb8ad9-24cc-40a2-944b-4debf819eb31",
+  "id": "cyber-defense-workflow",
+  "meta": {
+    "instanceId": "local"
+  },
+  "tags": []
+}
