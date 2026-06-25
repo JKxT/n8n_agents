@@ -1,0 +1,512 @@
+{
+  "name": "Government Corruption Detection Agent",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-node",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "opencorporates_api_key",
+              "value": "YOUR_OPENCORPORATES_API_KEY"
+            },
+            {
+              "name": "notification_email",
+              "value": "auditor-alert@government-audit.org"
+            }
+          ],
+          "number": [
+            {
+              "name": "tender_threshold",
+              "value": 100000
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-config-node",
+      "name": "Set Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        300,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Contracts",
+        "options": {}
+      },
+      "id": "get-contracts-node",
+      "name": "Get Contracts Ledger",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        500,
+        240
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "loop-contracts-node",
+      "name": "Loop Contracts",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        700,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const config = $node[\"Set Configuration\"].json;\nconst contract = $json;\nconst flags = [];\n\n// 1. Bid Splitting check\nconst amt = Number(contract.Amount || 0);\nconst threshold = Number(config.tender_threshold || 100000);\nif (amt >= threshold * 0.9 && amt < threshold) {\n  flags.push(\"POTENTIAL_BID_SPLITTING (Value is \" + amt + \", just below public tender threshold of \" + threshold + \")\");\n}\n\n// 2. Unusually fast turnaround check\nconst awardStr = contract.AwardDate || contract[\"Award Date\"];\nconst pubStr = contract.PublishedDate || contract[\"Published Date\"];\nlet diffDays = 999;\nif (awardStr && pubStr) {\n  const award = new Date(awardStr);\n  const pub = new Date(pubStr);\n  diffDays = Math.ceil(Math.abs(award - pub) / (1000 * 60 * 60 * 24));\n  if (diffDays <= 3) {\n    flags.push(\"SUSPICIOUS_SPEED (Awarded within \" + diffDays + \" days of publication)\");\n  }\n}\n\n// 3. Single Bidder check\nconst bidders = Number(contract.BiddersCount || contract[\"Bidders Count\"] || 0);\nif (bidders === 1 && contract.Method !== 'Direct Award') {\n  flags.push(\"SINGLE_BIDDER_ANOMALY (Only 1 bidder in competitive category)\");\n}\n\nreturn {\n  ...contract,\n  rule_flags: flags,\n  rule_risk_points: flags.length * 20\n};"
+      },
+      "id": "evaluate-rules-node",
+      "name": "Evaluate Rules Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        900,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.opencorporates.com/v0.4/companies/search?q={{ encodeURIComponent($json.SupplierName || $json[\"Supplier Name\"]) }}&api_token={{ $node[\"Set Configuration\"].json.opencorporates_api_key }}",
+        "options": {}
+      },
+      "id": "opencorporates-lookup-node",
+      "name": "OpenCorporates Company Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        1100,
+        240
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const searchResult = $node[\"OpenCorporates Company Lookup\"].json;\nconst contractData = $node[\"Evaluate Rules Engine\"].json;\nconst awardDateStr = contractData.AwardDate || contractData[\"Award Date\"];\nconst awardDate = awardDateStr ? new Date(awardDateStr) : new Date();\n\nlet companyAgeDays = 9999;\nlet isDissolved = false;\nlet jurisdiction = 'Unknown';\nlet companyAddress = 'Not Found';\nlet opencorporatesLink = '';\nconst flags = [];\n\ntry {\n  if (searchResult && searchResult.results && searchResult.results.companies && searchResult.results.companies.length > 0) {\n    const company = searchResult.results.companies[0].company;\n    jurisdiction = company.jurisdiction_code || 'Unknown';\n    companyAddress = company.registered_address_in_full || 'No address registered';\n    opencorporatesLink = company.opencorporates_url || '';\n    \n    if (company.incorporation_date) {\n      const incDate = new Date(company.incorporation_date);\n      const diffTime = Math.abs(awardDate - incDate);\n      companyAgeDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));\n      if (companyAgeDays < 90) {\n        flags.push(\"NEWLY_INCORPORATED_SUPPLIER (Incorporated \" + companyAgeDays + \" days before contract award)\");\n      }\n    }\n    \n    const currentStatus = (company.current_status || '').toLowerCase();\n    if (currentStatus.includes('dissolved') || currentStatus.includes('inactive') || currentStatus.includes('struck off')) {\n      isDissolved = true;\n      flags.push(\"INACTIVE_SUPPLIER (Company current status: \" + company.current_status + \")\");\n    }\n  } else {\n    flags.push(\"UNREGISTERED_SUPPLIER (No company match found in registry search)\");\n  }\n} catch (e) {\n  // Catch errors and proceed with fallbacks\n}\n\nreturn {\n  ...contractData,\n  opencorporates_link: opencorporatesLink,\n  company_jurisdiction: jurisdiction,\n  company_address: companyAddress,\n  company_age_days: companyAgeDays,\n  company_status_inactive: isDissolved,\n  registry_flags: flags,\n  registry_risk_points: flags.length * 20\n};"
+      },
+      "id": "evaluate-profile-node",
+      "name": "Evaluate Supplier Profile",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are a senior forensic auditor specializing in public procurement fraud and corruption detection. Analyze the contract details, rules engine flags, and supplier registry profile to evaluate corruption risk indicators (e.g. bid rigging, shell companies, or political connections)."
+            },
+            {
+              "role": "user",
+              "message": "Audit this contract:\nContract ID: {{ $json.ContractID || $json[\"Contract ID\"] }}\nTitle: {{ $json.Title }}\nAmount: {{ $json.Amount }}\nSupplier: {{ $json.SupplierName || $json[\"Supplier Name\"] }}\nCorporate Address: {{ $json.company_address }}\nCompany Age (days): {{ $json.company_age_days }}\nRules Flags: {{ $json.rule_flags.join(', ') }}\nRegistry Flags: {{ $json.registry_flags.join(', ') }}\n\nIdentify red flags, analyze beneficial ownership risk, and output a JSON format: \n{\"conflict_analysis\": \"...\", \"red_flags_summary\": \"...\", \"llm_risk_score\": 0 to 40 (0 = clean, 40 = highly suspicious), \"investigation_notes\": \"...\"}"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "forensic-audit-llm-node",
+      "name": "Forensic Audit (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        240
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let audit = { conflict_analysis: '', red_flags_summary: '', llm_risk_score: 0, investigation_notes: '' };\nconst profileData = $node[\"Evaluate Supplier Profile\"].json;\n\ntry {\n  const rawText = $node[\"Forensic Audit (LLM)\"].json.choices[0].message.content;\n  audit = JSON.parse(rawText);\n} catch (e) {\n  audit.conflict_analysis = \"Could not analyze conflicts.\";\n  audit.red_flags_summary = \"Review required.\";\n  audit.llm_risk_score = 10;\n  audit.investigation_notes = \"OpenAI parsing failed.\";\n}\n\nconst rulesScore = Number(profileData.rule_risk_points || 0);\nconst regScore = Number(profileData.registry_risk_points || 0);\nconst llmScore = Number(audit.llm_risk_score || 0);\nlet totalRisk = rulesScore + regScore + llmScore;\nif (totalRisk > 100) totalRisk = 100;\n\nlet level = 'LOW';\nif (totalRisk >= 75) {\n  level = 'HIGH';\n} else if (totalRisk >= 40) {\n  level = 'MEDIUM';\n}\n\n// Combine all flags\nconst allFlags = [].concat(profileData.rule_flags || [], profileData.registry_flags || []);\n\nreturn {\n  ...profileData,\n  final_risk_score: totalRisk,\n  risk_level: level,\n  all_risk_flags: allFlags.join('; '),\n  conflict_analysis: audit.conflict_analysis,\n  red_flags_summary: audit.red_flags_summary,\n  investigation_notes: audit.investigation_notes\n};"
+      },
+      "id": "parse-audit-node",
+      "name": "Parse Forensic Audit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1700,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEETS_ID",
+          "mode": "id"
+        },
+        "sheetName": "Contracts",
+        "columnToMatchOn": "Contract ID",
+        "valueToMatchOn": "={{ $json.ContractID || $json[\"Contract ID\"] }}",
+        "fieldsToSend": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Risk Score": "={{ $json.final_risk_score }}%",
+            "Risk Level": "={{ $json.risk_level }}",
+            "Risk Flags": "={{ $json.all_risk_flags }}",
+            "Auditor Notes": "={{ $json.red_flags_summary }}. Notes: {{ $json.investigation_notes }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "sheets-update-risk-node",
+      "name": "Google Sheets Log Risk",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        1900,
+        240
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credential-id",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.risk_level }}",
+              "operation": "equal",
+              "value2": "HIGH"
+            }
+          ]
+        }
+      },
+      "id": "risk-high-if-node",
+      "name": "Risk Level High?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "message": "You are a senior forensic anti-corruption investigator. Write a formal, detailed Forensic Investigation Report in Markdown based on the contract audit, rules engine flags, and corporate profile search. Use section headers: 1. Executive Summary, 2. Flagged Procurement Anomalies, 3. Supplier Profile Audit, 4. Conflict of Interest Risk, 5. Recommended Actions."
+            },
+            {
+              "role": "user",
+              "message": "Write a report for:\nContract: {{ $json.ContractID || $json[\"Contract ID\"] }} - {{ $json.Title }}\nAmount: {{ $json.Amount }}\nSupplier: {{ $json.SupplierName || $json[\"Supplier Name\"] }} (Address: {{ $json.company_address }})\nFlags: {{ $json.all_risk_flags }}\nRisk Score: {{ $json.final_risk_score }}%\nConflict Analysis: {{ $json.conflict_analysis }}\nInvestigation Notes: {{ $json.investigation_notes }}"
+            }
+          ]
+        }
+      },
+      "id": "draft-report-node",
+      "name": "Draft Forensic Report (LLM)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        2300,
+        140
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credential-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return {\n  report_markdown: $node[\"Draft Forensic Report (LLM)\"].json.choices[0].message.content\n};"
+      },
+      "id": "parse-report-node",
+      "name": "Parse Forensic Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        2500,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $node[\"Set Configuration\"].json.notification_email }}",
+        "subject": "=🚨 CORRUPTION ALERT: High Risk Contract Award Detected ({{ $node[\"Loop Contracts\"].json.ContractID || $node[\"Loop Contracts\"].json[\"Contract ID\"] }})",
+        "message": "=Hi Auditor Team,\n\nOur autonomous detection agent has flagged a contract award with a high corruption risk score of {{ $node[\"Parse Forensic Audit\"].json.final_risk_score }}%.\n\nSupplier: {{ $node[\"Loop Contracts\"].json.SupplierName || $node[\"Loop Contracts\"].json[\"Supplier Name\"] }}\nAmount: {{ $node[\"Loop Contracts\"].json.Amount }}\n\nBelow is the generated Forensic Investigation Report:\n\n{{ $json.report_markdown }}\n\nBest,\nAutonomous Anti-Corruption Agent",
+        "options": {}
+      },
+      "id": "gmail-alert-node",
+      "name": "Send High Risk Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        2700,
+        140
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail-credential-id",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "noop-continue-node",
+      "name": "NoOp Continue",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2300,
+        340
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "noop-completed-node",
+      "name": "Finished Output",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3000,
+        240
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Configuration": {
+      "main": [
+        [
+          {
+            "node": "Get Contracts Ledger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Contracts Ledger": {
+      "main": [
+        [
+          {
+            "node": "Loop Contracts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Contracts": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Rules Engine",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finished Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Rules Engine": {
+      "main": [
+        [
+          {
+            "node": "OpenCorporates Company Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenCorporates Company Lookup": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Supplier Profile",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Supplier Profile": {
+      "main": [
+        [
+          {
+            "node": "Forensic Audit (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Forensic Audit (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse Forensic Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Forensic Audit": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets Log Risk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets Log Risk": {
+      "main": [
+        [
+          {
+            "node": "Risk Level High?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Risk Level High?": {
+      "main": [
+        [
+          {
+            "node": "Draft Forensic Report (LLM)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "NoOp Continue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Forensic Report (LLM)": {
+      "main": [
+        [
+          {
+            "node": "Parse Forensic Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Forensic Report": {
+      "main": [
+        [
+          {
+            "node": "Send High Risk Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send High Risk Alert": {
+      "main": [
+        [
+          {
+            "node": "Loop Contracts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NoOp Continue": {
+      "main": [
+        [
+          {
+            "node": "Loop Contracts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionTimeout": 3600
+  },
+  "versionId": "3cb0179a-bf60-496a-b280-5fb621bdfc08",
+  "id": "corruption-detection-workflow",
+  "meta": {
+    "instanceId": "local"
+  },
+  "tags": []
+}
